@@ -4,6 +4,8 @@
 #import "../SurfaceViewController.h"
 #import "../utils.h"
 
+#include <dlfcn.h>
+
 #include "../glfw_keycodes.h"
 
 // Left thumbstick directions
@@ -20,6 +22,39 @@
 CFAbsoluteTime lastFrameTime;
 CGFloat lastXValue; // lastHorizontalValue
 CGFloat lastYValue; // lastVerticalValue
+
+// State below is main-thread only (GameController handlers and the display link both run there)
+// YES once a mod (e.g. Controlify) has initialised SDL's gamepad subsystem; the built-in mapping then stands down
+static BOOL sdlActive;
+// GLFW keycodes / mouse buttons currently pressed by the launcher, so they can be released on handover to SDL
+static NSMutableSet<NSNumber *> *heldKeys;
+static NSMutableSet<NSNumber *> *heldMouseButtons;
+// Last direction of the left thumbstick WASD emulation, -2 = nothing sent yet
+static char lastLThumbDirection = -2;
+
+static void sendTrackedKey(int keycode, BOOL pressed) {
+    if (!heldKeys) {
+        heldKeys = [NSMutableSet new];
+    }
+    if (pressed) {
+        [heldKeys addObject:@(keycode)];
+    } else {
+        [heldKeys removeObject:@(keycode)];
+    }
+    CallbackBridge_nativeSendKey(keycode, 0, pressed, 0);
+}
+
+static void sendTrackedMouseButton(int button, BOOL pressed) {
+    if (!heldMouseButtons) {
+        heldMouseButtons = [NSMutableSet new];
+    }
+    if (pressed) {
+        [heldMouseButtons addObject:@(button)];
+    } else {
+        [heldMouseButtons removeObject:@(button)];
+    }
+    CallbackBridge_nativeSendMouseButton(button, pressed, 0);
+}
 
 @implementation ControllerInput
 
@@ -39,8 +74,58 @@ BOOL leftShiftHeld;
     menuMap = gamepadJSON[@"mMenuMappingList"];
 }
 
+/**
+ * Check whether a mod has initialised SDL's gamepad subsystem, at most once per second.
+ * RTLD_NOLOAD means this never loads SDL itself.
+ */
++ (void)updateSDLState {
+    static CFTimeInterval lastCheck;
+    static uint32_t (*wasInit)(uint32_t);
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastCheck < 1.0) return;
+    lastCheck = now;
+
+    if (!wasInit) {
+        NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libSDL3.dylib"];
+        void *handle = dlopen(path.fileSystemRepresentation, RTLD_LAZY | RTLD_NOLOAD);
+        if (!handle) return;
+        // The handle is deliberately not dlclose'd, so SDL stays loaded until the JVM unloads it
+        wasInit = (uint32_t (*)(uint32_t))dlsym(handle, "SDL_WasInit");
+        if (!wasInit) return;
+    }
+
+    BOOL active = wasInit(0x2000 /* SDL_INIT_GAMEPAD */) != 0;
+    if (active == sdlActive) return;
+    sdlActive = active;
+    NSLog(@"[ControllerInput] SDL gamepad subsystem %@, built-in mapping %@", active ? @"active" : @"inactive", active ? @"disabled" : @"enabled");
+    if (active) [self releaseHeldInputs];
+}
+
+/**
+ * Release everything the launcher is holding, so nothing stays stuck once SDL takes over
+ */
++ (void)releaseHeldInputs {
+    // Call CallbackBridge_* directly, sdlActive is already YES so sendKeyEvent would return early
+    for (NSNumber *key in heldKeys) {
+        CallbackBridge_nativeSendKey(key.intValue, 0, 0, 0);
+    }
+    for (NSNumber *button in heldMouseButtons) {
+        CallbackBridge_nativeSendMouseButton(button.intValue, 0, 0);
+    }
+    NSLog(@"[ControllerInput] Released %lu keys, %lu mouse buttons", heldKeys.count, heldMouseButtons.count);
+    [heldKeys removeAllObjects];
+    [heldMouseButtons removeAllObjects];
+
+    // The left shift toggle's key is already released through heldKeys
+    leftShiftHeld = NO;
+    lastXValue = lastYValue = 0;
+    lastLThumbDirection = -2;
+}
+
 + (void)sendKeyEvent:(int)controllerKeycode pressed:(BOOL)pressed {
-    int keycode;
+    if (sdlActive) return;
+
+    int keycode = GLFW_KEY_UNKNOWN;
     __block NSMutableDictionary *mapping;
     if (isGrabbing) {
         mapping = gameMap;
@@ -61,17 +146,17 @@ BOOL leftShiftHeld;
         case -GLFW_KEY_LEFT_SHIFT:
             if (!pressed) {
                 leftShiftHeld = !leftShiftHeld;
-                CallbackBridge_nativeSendKey(GLFW_KEY_LEFT_SHIFT, 0, leftShiftHeld, 0);
+                sendTrackedKey(GLFW_KEY_LEFT_SHIFT, leftShiftHeld);
             }
             break;
         case SPECIALBTN_MOUSEPRI:
-            CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_LEFT, pressed, 0);
+            sendTrackedMouseButton(GLFW_MOUSE_BUTTON_LEFT, pressed);
             break;
         case SPECIALBTN_MOUSEMID:
-            CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_MIDDLE, pressed, 0);
+            sendTrackedMouseButton(GLFW_MOUSE_BUTTON_MIDDLE, pressed);
             break;
         case SPECIALBTN_MOUSESEC:
-            CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_RIGHT, pressed, 0);
+            sendTrackedMouseButton(GLFW_MOUSE_BUTTON_RIGHT, pressed);
             break;
         case SPECIALBTN_SCROLLUP:
             CallbackBridge_nativeSendScroll(0, pressed ? 1 : 0);
@@ -83,7 +168,7 @@ BOOL leftShiftHeld;
             if (keycode == GLFW_KEY_LEFT_SHIFT) {
                 leftShiftHeld = pressed;
             }
-            CallbackBridge_nativeSendKey(keycode, 0, pressed, 0);
+            sendTrackedKey(keycode, pressed);
             break;
     }
 }
@@ -141,6 +226,8 @@ BOOL leftShiftHeld;
     };
 
     gamepad.leftThumbstick.valueChangedHandler = ^(GCControllerDirectionPad * _Nonnull dpad, float xValue, float yValue) {
+        if (sdlActive) return;
+
         if (!isGrabbing) {
             // Update virtual mouse position
             lastXValue = xValue;
@@ -148,7 +235,6 @@ BOOL leftShiftHeld;
             return;
         }
 
-        static char lastLThumbDirection = -2;
         char direction = -1;
         if (xValue != 0 && yValue != 0) {
             CGFloat degree = atan2f(yValue, xValue) * (180.0 / M_PI);
@@ -162,23 +248,25 @@ BOOL leftShiftHeld;
         }
 
         // Update WASD states
-        CallbackBridge_nativeSendKey(GLFW_KEY_W, 0,
+        sendTrackedKey(GLFW_KEY_W,
             direction >= DIRECTION_NORTH_EAST &&
-            direction <= DIRECTION_NORTH_WEST, 0);
-        CallbackBridge_nativeSendKey(GLFW_KEY_A, 0,
+            direction <= DIRECTION_NORTH_WEST);
+        sendTrackedKey(GLFW_KEY_A,
             direction >= DIRECTION_NORTH_WEST &&
-            direction <= DIRECTION_SOUTH_WEST, 0);
-        CallbackBridge_nativeSendKey(GLFW_KEY_S, 0,
+            direction <= DIRECTION_SOUTH_WEST);
+        sendTrackedKey(GLFW_KEY_S,
             direction >= DIRECTION_SOUTH_WEST &&
-            direction <= DIRECTION_SOUTH_EAST, 0);
-        CallbackBridge_nativeSendKey(GLFW_KEY_D, 0,
+            direction <= DIRECTION_SOUTH_EAST);
+        sendTrackedKey(GLFW_KEY_D,
             direction == DIRECTION_SOUTH_EAST ||
             direction == DIRECTION_EAST ||
-            direction == DIRECTION_NORTH_EAST, 0);
+            direction == DIRECTION_NORTH_EAST);
 
         lastLThumbDirection = direction;
     };
     gamepad.rightThumbstick.valueChangedHandler = ^(GCControllerDirectionPad * _Nonnull dpad, float xValue, float yValue) {
+        if (sdlActive) return;
+
         if (isGrabbing) {
             lastXValue = xValue;
             lastYValue = yValue;
@@ -196,6 +284,13 @@ BOOL leftShiftHeld;
  * Send the new mouse position, computing the delta
  */
 + (void)tick {
+    [self updateSDLState];
+    if (sdlActive) {
+        // Avoid a large delta if the built-in mapping resumes
+        lastFrameTime = 0;
+        return;
+    }
+
     // There isn't a convenient way to get ns, use ms at this point
     CGFloat frameTime = CACurrentMediaTime();
     // GameController automatically performs deadzone calculations
