@@ -239,6 +239,13 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
+    NSString *sdlPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libSDL3.dylib"];
+    if ([NSFileManager.defaultManager fileExistsAtPath:sdlPath]) {
+        margv[++margc] = [NSString stringWithFormat:@"-Ddev.isxander.sdl.library=%@", sdlPath].UTF8String;
+        NSLog(@"[JavaLauncher] SDL3 library: %@", sdlPath);
+    } else {
+        NSLog(@"[JavaLauncher] SDL3 library not bundled, skipping");
+    }
     margv[++margc] = [NSString stringWithFormat:@"-Duser.dir=%@", gameDir].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Duser.home=%s", getenv("AME_HOME")].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Duser.timezone=%@", NSTimeZone.localTimeZone.name].UTF8String;
