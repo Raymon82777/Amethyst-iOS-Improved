@@ -324,6 +324,28 @@ dep_mg:
 	cp $(SOURCEDIR)/Natives/external/MobileGlues/src/main/cpp/libraries/ios/libspirv-cross-c-shared.0.dylib $(WORKINGDIR)/libspirv-cross-c-shared.0.dylib
 	echo '[Amethyst v$(VERSION)] dep_mg - end'
 
+dep_sdl:
+	echo '[Amethyst v$(VERSION)] dep_sdl - start'
+	mkdir -p $(WORKINGDIR)/sdl
+	cd $(WORKINGDIR)/sdl && cmake \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_CROSSCOMPILING=true \
+		-DCMAKE_SYSTEM_NAME=iOS \
+		-DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+		-DCMAKE_OSX_SYSROOT="$(SDKPATH)" \
+		-DCMAKE_OSX_ARCHITECTURES=arm64 \
+		-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+		-DSDL_SHARED=ON \
+		-DSDL_STATIC=OFF \
+		-DSDL_FRAMEWORK=OFF \
+		-DSDL_TEST_LIBRARY=OFF \
+		-DSDL_AUDIO=OFF \
+		$(SOURCEDIR)/Natives/external/SDL
+
+	cmake --build $(WORKINGDIR)/sdl --config RelWithDebInfo -j$(JOBS)
+	cp -L $(WORKINGDIR)/sdl/libSDL3.dylib $(WORKINGDIR)/libSDL3.dylib
+	echo '[Amethyst v$(VERSION)] dep_sdl - end'
+
 assets:
 	echo '[Amethyst v$(VERSION)] assets - start'
 	if [ '$(IOS)' = '0' ] && [ '$(DETECTPLAT)' = 'Darwin' ]; then \
@@ -339,7 +361,7 @@ assets:
 	fi
 	echo '[Amethyst v$(VERSION)] assets - end'
 
-payload: native dep_mg java jre assets
+payload: native dep_mg dep_sdl java jre assets
 	echo '[Amethyst v$(VERSION)] payload - start'
 	$(call METHOD_DIRCHECK,$(WORKINGDIR)/AngelAuraAmethyst.app/libs)
 	$(call METHOD_DIRCHECK,$(WORKINGDIR)/AngelAuraAmethyst.app/libs_caciocavallo)
