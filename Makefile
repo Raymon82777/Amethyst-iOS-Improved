@@ -457,4 +457,4 @@ clean:
 
 		
 
-.PHONY: all clean check native java jre package dsym deploy help
+.PHONY: all clean check native java jre package dsym deploy help dep_sdl
