@@ -12,7 +12,8 @@ on:
 jobs:
   build:
     name: iOS build
-    runs-on: macos-15
+    # Xcode 26 (iOS 26 SDK) is required, e.g. for UIBarButtonItem.sharesBackground
+    runs-on: macos-26
 
     steps:
       - name: Checkout repository
