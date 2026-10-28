@@ -51,6 +51,9 @@ void init_loadDefaultEnv() {
 
     // Runs JVM in a separate thread
     setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
+
+    // SDL ignores SDL_SetHint below override priority when the env var is set, so this keeps SDL from starting CoreBluetooth (the app has no Bluetooth usage description)
+    setenv("SDL_JOYSTICK_HIDAPI_STEAM", "0", 1);
 }
 
 void init_loadCustomEnv() {
@@ -239,7 +242,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
-    NSString *sdlPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libSDL3.dylib"];
+    NSString *sdlPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:SDL3_LIBRARY_SUBPATH];
     if ([NSFileManager.defaultManager fileExistsAtPath:sdlPath]) {
         margv[++margc] = [NSString stringWithFormat:@"-Ddev.isxander.sdl.library=%@", sdlPath].UTF8String;
         NSLog(@"[JavaLauncher] SDL3 library: %@", sdlPath);

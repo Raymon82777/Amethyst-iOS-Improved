@@ -75,26 +75,31 @@ BOOL leftShiftHeld;
 }
 
 /**
- * Check whether a mod has initialised SDL's gamepad subsystem, at most once per second.
+ * Check whether a mod has initialised SDL's gamepad subsystem and SDL sees a controller, at most once per second.
  * RTLD_NOLOAD means this never loads SDL itself.
  */
 + (void)updateSDLState {
     static CFTimeInterval lastCheck;
     static uint32_t (*wasInit)(uint32_t);
+    static bool (*hasGamepad)(void);
     CFTimeInterval now = CACurrentMediaTime();
     if (now - lastCheck < 1.0) return;
     lastCheck = now;
 
-    if (!wasInit) {
-        NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libSDL3.dylib"];
+    if (!wasInit || !hasGamepad) {
+        NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:SDL3_LIBRARY_SUBPATH];
         void *handle = dlopen(path.fileSystemRepresentation, RTLD_LAZY | RTLD_NOLOAD);
         if (!handle) return;
         // The handle is deliberately not dlclose'd, so SDL stays loaded until the JVM unloads it
-        wasInit = (uint32_t (*)(uint32_t))dlsym(handle, "SDL_WasInit");
-        if (!wasInit) return;
+        // Resolve both symbols before caching either, if one is missing SDL counts as inactive
+        uint32_t (*wasInitSym)(uint32_t) = (uint32_t (*)(uint32_t))dlsym(handle, "SDL_WasInit");
+        bool (*hasGamepadSym)(void) = (bool (*)(void))dlsym(handle, "SDL_HasGamepad");
+        if (!wasInitSym || !hasGamepadSym) return;
+        wasInit = wasInitSym;
+        hasGamepad = hasGamepadSym;
     }
 
-    BOOL active = wasInit(0x2000 /* SDL_INIT_GAMEPAD */) != 0;
+    BOOL active = wasInit(0x2000 /* SDL_INIT_GAMEPAD */) != 0 && hasGamepad();
     if (active == sdlActive) return;
     sdlActive = active;
     NSLog(@"[ControllerInput] SDL gamepad subsystem %@, built-in mapping %@", active ? @"active" : @"inactive", active ? @"disabled" : @"enabled");
@@ -113,11 +118,13 @@ BOOL leftShiftHeld;
         CallbackBridge_nativeSendMouseButton(button.intValue, 0, 0);
     }
     NSLog(@"[ControllerInput] Released %lu keys, %lu mouse buttons", heldKeys.count, heldMouseButtons.count);
+    // leftShiftHeld is shared with the on-screen joystick, only clear it if this controller path held shift
+    BOOL shiftHeld = [heldKeys containsObject:@(GLFW_KEY_LEFT_SHIFT)];
     [heldKeys removeAllObjects];
     [heldMouseButtons removeAllObjects];
 
     // The left shift toggle's key is already released through heldKeys
-    leftShiftHeld = NO;
+    if (shiftHeld) leftShiftHeld = NO;
     lastXValue = lastYValue = 0;
     lastLThumbDirection = -2;
 }
@@ -333,6 +340,9 @@ BOOL leftShiftHeld;
     gamepad.rightThumbstick.valueChangedHandler = nil;
     gamepad.leftThumbstickButton.pressedChangedHandler = nil;
     gamepad.rightThumbstickButton.pressedChangedHandler = nil;
+
+    // Never leave keys stuck if the controller disconnects mid-press
+    [self releaseHeldInputs];
 }
 
 @end
