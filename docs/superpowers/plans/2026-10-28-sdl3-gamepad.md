@@ -14,6 +14,8 @@
 
 - SDL source: submodule `Natives/external/SDL`, URL `https://github.com/libsdl-org/SDL`, tag `release-3.4.12`.
 - SDL CMake: `-DCMAKE_SYSTEM_NAME=iOS`, `-DCMAKE_OSX_ARCHITECTURES=arm64`, `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0`, `-DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_FRAMEWORK=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_AUDIO=OFF`, built `--config RelWithDebInfo`.
+- SDL patch: `Natives/patches/sdl3-uikit-gamepad-interaction-main-thread.patch`, applied to the submodule by `dep_sdl` before configuring (idempotent), so SDL's joystick init/quit call `UIKit_SetGameControllerInteraction` on the main thread (Controlify calls `SDL_Init` from the game thread).
+- Default env: `SDL_JOYSTICK_HIDAPI_STEAM=0` in `init_loadDefaultEnv`, so SDL ignores Controlify's hint and never starts CoreBluetooth (the app has no Bluetooth usage description).
 - Bundled file name and location: `<bundle>/Frameworks/libSDL3.dylib` (exactly one copy, not a symlink).
 - JVM property: `-Ddev.isxander.sdl.library=<bundle>/Frameworks/libSDL3.dylib`, added only if the file exists.
 - `SDL_INIT_GAMEPAD` = `0x2000`. SDL state is checked at most once per second.
@@ -175,6 +177,8 @@ Run: `make native` (macOS), then package and install. Check:
 - d. **No Controlify:** the "SDL gamepad subsystem" log line never appears; the built-in mapping works as before (stick = WASD, buttons per the gamepad map, virtual mouse in menus).
 - e. **SDL init fails:** temporarily replace `Frameworks/libSDL3.dylib` with a copy built with `-DSDL_JOYSTICK=OFF`, or accept Task 2's failure case if it reproduced. Controlify falls back to GLFW; the "active" line never appears; the built-in mapping still works.
 - f. **Reconnect:** with Controlify active, turn the controller off and on mid-game. Controlify re-detects it; the built-in mapping stays suppressed (the launcher re-registers callbacks on connect, and they still return early).
+- g. **Controlify disabled/blind:** Controlify installed but controller disabled in Controlify / Controlify sees no controller → built-in mapping stays on.
+- h. **No crash on launch:** no crash on launch with Controlify installed on an iOS 18+ device; with Xcode's Main Thread Checker, no UIKit-off-main warnings from SDL.
 
 - [ ] **Step 6: Commit**
 

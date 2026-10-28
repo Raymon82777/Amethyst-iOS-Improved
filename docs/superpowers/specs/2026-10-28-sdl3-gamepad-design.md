@@ -51,6 +51,12 @@ folder is all Controlify needs. No mod changes, no Java-side patches.
     on iOS that would configure `AVAudioSession` and could fight the game's
     OpenAL audio. With audio compiled out the call fails and Controlify logs a
     warning and continues.
+  - Before configuring, `dep_sdl` applies
+    `Natives/patches/sdl3-uikit-gamepad-interaction-main-thread.patch` to the
+    submodule (idempotent: skipped if already applied). It makes SDL's joystick
+    init/quit run `UIKit_SetGameControllerInteraction` on the main thread,
+    because Controlify calls `SDL_Init` from the game thread and UIKit windows
+    must only be touched from the main thread.
   - Build with `--config RelWithDebInfo`, then copy the real (non-symlink)
     library to `$(WORKINGDIR)/libSDL3.dylib`, so the existing
     `cp $(WORKINGDIR)/*.dylib .../Frameworks/` line in `payload` picks it up
@@ -71,6 +77,12 @@ In `Natives/JavaLauncher.m`, next to `-Djava.library.path`, add:
 This makes loading independent of library-path search order. Only add it if
 the file exists, so a build without SDL behaves exactly as today.
 
+Also set `SDL_JOYSTICK_HIDAPI_STEAM=0` in the default environment (before the
+custom env variables, so users can still override it). SDL ignores
+`SDL_SetHint` below override priority when the env var is set, so this stops
+Controlify's `SDL_HINT_JOYSTICK_HIDAPI_STEAM=1` from making SDL's HIDAPI start
+CoreBluetooth, and the app has no Bluetooth usage description (iOS would kill it).
+
 ### 3. Hand the controller over to SDL automatically
 
 The launcher's `ControllerInput` maps controller buttons to keys/mouse. If
@@ -81,10 +93,14 @@ launcher therefore steps aside while an SDL user is active.
   (driven by the `CADisplayLink` in `SurfaceViewController`), throttled to
   once per second:
   - `dlopen("<bundle>/Frameworks/libSDL3.dylib", RTLD_LAZY | RTLD_NOLOAD)`;
-    if it is loaded, cache the handle and `dlsym` `SDL_WasInit`.
+    if it is loaded, cache the handle and `dlsym` `SDL_WasInit` and
+    `SDL_HasGamepad`.
   - SDL is "active" when `SDL_WasInit(SDL_INIT_GAMEPAD)` (`0x2000`) is
-    non-zero. `SDL_WasInit` only reads subsystem ref-counts, so calling it
-    from the main thread is safe.
+    non-zero **and** `SDL_HasGamepad()` is true, so the launcher mapping stays
+    on if SDL sees no controller (e.g. the controller is disabled in
+    Controlify). `SDL_WasInit` only reads subsystem ref-counts and
+    `SDL_HasGamepad` only reads the device list, so calling them from the main
+    thread is safe.
 - While active:
   - Every button and thumbstick handler set in
     `registerControllerCallbacks:` returns early.

@@ -326,6 +326,8 @@ dep_mg:
 
 dep_sdl:
 	echo '[Amethyst v$(VERSION)] dep_sdl - start'
+	# Run SDL joystick init's UIKit call on the main thread (no-op if already applied, fails if it does not apply)
+	git -C $(SOURCEDIR)/Natives/external/SDL apply --reverse --check $(SOURCEDIR)/Natives/patches/sdl3-uikit-gamepad-interaction-main-thread.patch 2>/dev/null || git -C $(SOURCEDIR)/Natives/external/SDL apply $(SOURCEDIR)/Natives/patches/sdl3-uikit-gamepad-interaction-main-thread.patch
 	mkdir -p $(WORKINGDIR)/sdl
 	cd $(WORKINGDIR)/sdl && cmake \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo \

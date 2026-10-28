@@ -1,0 +1,43 @@
+diff --git a/src/joystick/apple/SDL_mfijoystick.m b/src/joystick/apple/SDL_mfijoystick.m
+index 98756f2ea..1e07ec8f9 100644
+--- a/src/joystick/apple/SDL_mfijoystick.m
++++ b/src/joystick/apple/SDL_mfijoystick.m
+@@ -767,6 +767,20 @@ static void SDLCALL SDL_AppleTVRemoteRotationHintChanged(void *udata, const char
+ }
+ #endif // SDL_PLATFORM_TVOS
+ 
++#ifdef SDL_VIDEO_DRIVER_UIKIT
++// UIKit windows may only be touched from the main thread, but SDL_Init() can be called from any thread.
++static void IOS_SetGameControllerInteraction(bool enabled)
++{
++    if ([NSThread isMainThread]) {
++        UIKit_SetGameControllerInteraction(enabled);
++    } else {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            UIKit_SetGameControllerInteraction(enabled);
++        });
++    }
++}
++#endif
++
+ static bool IOS_JoystickInit(void)
+ {
+     if (!SDL_GetHintBoolean(SDL_HINT_JOYSTICK_MFI, true)) {
+@@ -833,7 +847,7 @@ static bool IOS_JoystickInit(void)
+ #endif // SDL_JOYSTICK_MFI
+ 
+ #ifdef SDL_VIDEO_DRIVER_UIKIT
+-        UIKit_SetGameControllerInteraction(true);
++        IOS_SetGameControllerInteraction(true);
+ #endif
+     }
+ 
+@@ -1622,7 +1636,7 @@ static void IOS_JoystickQuit(void)
+         }
+ 
+ #ifdef SDL_VIDEO_DRIVER_UIKIT
+-        UIKit_SetGameControllerInteraction(false);
++        IOS_SetGameControllerInteraction(false);
+ #endif
+     }
+ 
