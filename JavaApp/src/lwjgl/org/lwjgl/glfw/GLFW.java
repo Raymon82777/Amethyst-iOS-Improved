@@ -485,10 +485,12 @@ public class GLFW
     /* volatile */ public static GLFWDropCallback mGLFWDropCallback;
     /* volatile */ public static GLFWErrorCallback mGLFWErrorCallback;
     /* volatile */ public static GLFWFramebufferSizeCallback mGLFWFramebufferSizeCallback;
+    /* volatile */ public static GLFWIMEStatusCallback mGLFWIMEStatusCallback;
     /* volatile */ public static GLFWJoystickCallback mGLFWJoystickCallback;
     /* volatile */ public static GLFWKeyCallback mGLFWKeyCallback;
     /* volatile */ public static GLFWMonitorCallback mGLFWMonitorCallback;
     /* volatile */ public static GLFWMouseButtonCallback mGLFWMouseButtonCallback;
+    /* volatile */ public static GLFWPreeditCallback mGLFWPreeditCallback;
     /* volatile */ public static GLFWScrollCallback mGLFWScrollCallback;
     /* volatile */ public static GLFWWindowCloseCallback mGLFWWindowCloseCallback;
     /* volatile */ public static GLFWWindowContentScaleCallback mGLFWWindowContentScaleCallback;
@@ -787,6 +789,25 @@ public class GLFW
         return lastCallback;
     }
 
+    // GLFW 3.4 IME callbacks (used by Minecraft 26.2+). Text input arrives via the char callback, so these are only stored.
+    public static GLFWPreeditCallback glfwSetPreeditCallback(@NativeType("GLFWwindow *") long window, @Nullable @NativeType("GLFWpreeditfun") GLFWPreeditCallbackI cbfun) {
+        GLFWPreeditCallback lastCallback = mGLFWPreeditCallback;
+        if (cbfun == null) mGLFWPreeditCallback = null;
+        else mGLFWPreeditCallback = GLFWPreeditCallback.create(cbfun);
+
+        return lastCallback;
+    }
+
+    public static GLFWIMEStatusCallback glfwSetIMEStatusCallback(@NativeType("GLFWwindow *") long window, @Nullable @NativeType("GLFWimestatusfun") GLFWIMEStatusCallbackI cbfun) {
+        GLFWIMEStatusCallback lastCallback = mGLFWIMEStatusCallback;
+        if (cbfun == null) mGLFWIMEStatusCallback = null;
+        else mGLFWIMEStatusCallback = GLFWIMEStatusCallback.create(cbfun);
+
+        return lastCallback;
+    }
+
+    public static void glfwSetPreeditCursorRectangle(@NativeType("GLFWwindow *") long window, int x, int y, int w, int h) { }
+
     static boolean isGLFWReady;
     public static boolean glfwInit() {
         if (!isGLFWReady) {
@@ -807,6 +828,11 @@ public class GLFW
 
     public static int glfwGetPlatform() {
         return GLFW_PLATFORM_X11;
+    }
+
+    @NativeType("int")
+    public static boolean glfwPlatformSupported(int platform) {
+        return platform == glfwGetPlatform();
     }
 
     @NativeType("GLFWwindow *")
@@ -840,6 +866,12 @@ public class GLFW
     public static long glfwGetPrimaryMonitor() {
         // Prevent NULL check
         return 1L;
+    }
+
+    @Nullable
+    @NativeType("char const *")
+    public static String glfwGetMonitorName(@NativeType("GLFWmonitor *") long monitor) {
+        return "Built-in Display";
     }
 
     public static void glfwGetMonitorPos(@NativeType("GLFWmonitor *") long monitor, @Nullable @NativeType("int *") IntBuffer xpos, @Nullable @NativeType("int *") IntBuffer ypos) {
