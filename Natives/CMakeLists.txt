@@ -133,6 +133,7 @@ add_executable(AngelAuraAmethyst
   installer/modpack/ModrinthAPI.m
 
   mods/ModIndex.m
+  mods/ModFolder.m
   mods/ModProfileInfo.m
   mods/ModVersionSelector.m
 

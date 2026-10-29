@@ -6,12 +6,14 @@ int gModTestFailures = 0;
 void ModIndexTests(void);
 void ModProfileInfoTests(void);
 void ModVersionSelectorTests(void);
+void ModFolderTests(void);
 
 int main(void) {
     @autoreleasepool {
         ModIndexTests();
         ModProfileInfoTests();
         ModVersionSelectorTests();
+        ModFolderTests();
     }
     if (gModTestFailures > 0) {
         fprintf(stderr, "%d assertion(s) failed\n", gModTestFailures);

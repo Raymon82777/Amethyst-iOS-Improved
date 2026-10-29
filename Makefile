@@ -339,6 +339,7 @@ test_mods:
 		$(SOURCEDIR)/Natives/mods/ModProfileInfo.m \
 		$(SOURCEDIR)/Natives/mods/ModVersionSelector.m \
 		$(SOURCEDIR)/Natives/mods/ModIndex.m \
+		$(SOURCEDIR)/Natives/mods/ModFolder.m \
 		$(SOURCEDIR)/Natives/tests/mods/*.m \
 		-o $(WORKINGDIR)/tests/mods_tests
 	$(WORKINGDIR)/tests/mods_tests
