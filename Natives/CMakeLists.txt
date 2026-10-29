@@ -132,6 +132,19 @@ add_executable(AngelAuraAmethyst
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m
 
+  mods/ModIndex.m
+  mods/ModFolder.m
+  mods/ModProfileInfo.m
+  mods/ModVersionSelector.m
+  mods/ModDependencyResolver.m
+  mods/ModInstaller.m
+  mods/ModrinthModsAPI.m
+  mods/ModJarMetadata.m
+  mods/ModInstallFlow.m
+  mods/ModsViewController.m
+  mods/ModBrowseViewController.m
+  mods/ModDetailViewController.m
+
   input/ControllerInput.m
   input/GyroInput.m
   input/KeyboardInput.m

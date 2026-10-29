@@ -49,3 +49,14 @@ jobs:
           name: AngelAuraAmethyst.dSYM
           path: artifacts/AngelAuraAmethyst.dSYM
           if-no-files-found: warn
+
+  mod-tests:
+    name: Mod manager unit tests
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run mod manager tests
+        run: make test_mods

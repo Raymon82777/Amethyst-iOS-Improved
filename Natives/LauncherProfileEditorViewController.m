@@ -6,6 +6,7 @@
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "ios_uikit_bridge.h"
+#import "mods/ModsViewController.h"
 #import "utils.h"
 
 @interface LauncherProfileEditorViewController()<UIPickerViewDataSource, UIPickerViewDelegate>
@@ -109,6 +110,18 @@
               @"type": self.typeTextField,
               @"placeholder": [NSString stringWithFormat:@". -> /Documents/instances/%@", getPrefObject(@"general.game_directory")]
             },
+            @{@"key": @"mods",
+              @"icon": @"puzzlepiece",
+              @"title": @"preference.profile.title.mods",
+              @"type": self.typeButton,
+              // Mods work on the saved profile, so a profile that was never saved has none yet
+              @"enableCondition": ^BOOL(){
+                  return weakSelf.oldName.length > 0 && PLProfiles.current.profiles[weakSelf.oldName] != nil;
+              },
+              @"action": ^void(){
+                  [weakSelf actionOpenMods];
+              }
+            },
             // Video and renderer settings
             @{@"key": @"renderer",
               @"icon": @"cpu",
@@ -156,11 +169,32 @@
 }
 
 - (void)actionDone {
+    if (![self saveProfile]) {
+        // Skip dismissing this view controller
+        return;
+    }
+    [self actionClose];
+    [self refreshProfileList];
+}
+
+- (void)refreshProfileList {
+    // Call LauncherProfilesViewController's viewWillAppear
+    UINavigationController *navVC = (id) ((UISplitViewController *)self.presentingViewController).viewControllers[1];
+    [navVC.viewControllers[0] viewWillAppear:NO];
+}
+
+- (void)commitEditingTextField {
     // We might be saving without ending editing, so make sure textFieldDidEndEditing is always called
     UITextField *currentTextField = [self performSelector:@selector(_firstResponder)];
     if ([currentTextField isKindOfClass:UITextField.class] && [currentTextField isDescendantOfView:self.tableView]) {
         [self textFieldDidEndEditing:currentTextField];
     }
+}
+
+/* Writes the edited profile to PLProfiles and saves it. Returns NO (after telling the user) when the
+   new name is already taken. */
+- (BOOL)saveProfile {
+    [self commitEditingTextField];
 
     if ([self.profile[@"name"] length] == 0 && self.oldName.length > 0) {
         // Return to its old name
@@ -169,13 +203,15 @@
 
     if ([self.oldName isEqualToString:self.profile[@"name"]]) {
         // Not a rename, directly create/replace
-        PLProfiles.current.profiles[self.oldName] = self.profile;
+        // Store a copy: the editor stays open after saving from the Mods row, and its later edits
+        // must not reach the saved profile until they are saved too
+        PLProfiles.current.profiles[self.oldName] = self.profile.mutableCopy;
     } else if (!PLProfiles.current.profiles[self.profile[@"name"]]) {
         // A rename, remove then re-add to update its key name
         if (self.oldName.length > 0) {
             [PLProfiles.current.profiles removeObjectForKey:self.oldName];
         }
-        PLProfiles.current.profiles[self.profile[@"name"]] = self.profile;
+        PLProfiles.current.profiles[self.profile[@"name"]] = self.profile.mutableCopy;
         // Update selected name
         if ([PLProfiles.current.selectedProfileName isEqualToString:self.oldName]) {
             PLProfiles.current.selectedProfileName = self.profile[@"name"];
@@ -183,16 +219,76 @@
     } else {
         // Cancel rename since a profile with the same name already exists
         showDialog(localize(@"Error", nil), localize(@"profile.error.name_exists", nil));
-        // Skip dismissing this view controller
-        return;
+        return NO;
     }
 
     [PLProfiles.current save];
-    [self actionClose];
+    self.oldName = self.profile[@"name"];
+    return YES;
+}
 
-    // Call LauncherProfilesViewController's viewWillAppear
-    UINavigationController *navVC = (id) ((UISplitViewController *)self.presentingViewController).viewControllers[1];
-    [navVC.viewControllers[0] viewWillAppear:NO];
+#pragma mark Mods
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *item = self.prefContents[indexPath.section][indexPath.row];
+    if ([item[@"key"] isEqualToString:@"mods"]) {
+        // Run the action directly: the generic button handling would also show a "done" alert
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+        void(^invokeAction)(void) = item[@"action"];
+        if (invokeAction) {
+            invokeAction();
+        }
+        return;
+    }
+    [super tableView:tableView didSelectRowAtIndexPath:indexPath];
+}
+
+- (void)actionOpenMods {
+    [self commitEditingTextField];
+    NSDictionary *saved = PLProfiles.current.profiles[self.oldName];
+    if (!saved) {
+        return;
+    }
+
+    NSString *name = self.profile[@"name"];
+    NSString *version = self.profile[@"lastVersionId"];
+    BOOL nameChanged = name.length > 0 && ![name isEqualToString:self.oldName];
+    BOOL versionChanged = !(version == saved[@"lastVersionId"] || [version isEqualToString:saved[@"lastVersionId"]]);
+    // A missing Game directory and an empty one both mean the shared folder.
+    NSString *gameDir = self.profile[@"gameDir"] ?: @"";
+    NSString *savedGameDir = saved[@"gameDir"] ?: @"";
+    BOOL gameDirChanged = ![gameDir isEqual:savedGameDir];
+    if (!nameChanged && !versionChanged && !gameDirChanged) {
+        [self pushModsViewController];
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"preference.profile.title.mods", nil)
+        message:localize(@"mods.alert.save_first", nil) preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Save", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        if (![self saveProfile]) {
+            return;
+        }
+        [self refreshProfileList];
+        [self.tableView reloadData];
+        [self pushModsViewController];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)pushModsViewController {
+    NSString *profileName = self.oldName;
+    ModsViewController *vc = [[ModsViewController alloc] initWithProfileName:profileName];
+    __weak LauncherProfileEditorViewController *weakSelf = self;
+    vc.gameDirChanged = ^(NSString *newGameDir) {
+        LauncherProfileEditorViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        // Keep the editor's copy in step with the saved profile, so a later Done does not undo the move
+        strongSelf.profile[@"gameDir"] = newGameDir;
+        [strongSelf.tableView reloadData];
+    };
+    [self.navigationController pushViewController:vc animated:YES];
 }
 
 - (BOOL)isPickFieldAtSection:(NSString *)section key:(NSString *)key {
