@@ -106,12 +106,18 @@ static NSDictionary * _Nullable CachedMetadata(ModJar *jar, NSMutableDictionary 
    Matches are added to the record, misses go to unknownHashes. Returns YES if the record changed.
    Any failed request (offline) leaves the record alone so the jars are tried again next time. */
 static BOOL IdentifyJars(NSArray<ModJar *> *jars, ModIndex *modIndex, ModrinthModsAPI *api, NSMutableDictionary *cache) {
-    NSMutableDictionary<NSString *, ModJar *> *jarsByHash = [NSMutableDictionary new];
+    // Several jars can share a hash (copies of one file): each of them gets the result.
+    NSMutableDictionary<NSString *, NSMutableArray<ModJar *> *> *jarsByHash = [NSMutableDictionary new];
     for (ModJar *jar in jars) {
         if (modIndex.entries[jar.fileName]) continue;
         NSString *sha1 = CachedSha1(jar, cache);
         if (!sha1 || [modIndex.unknownHashes containsObject:sha1]) continue;
-        jarsByHash[sha1] = jar;
+        NSMutableArray<ModJar *> *sameHash = jarsByHash[sha1];
+        if (!sameHash) {
+            sameHash = [NSMutableArray new];
+            jarsByHash[sha1] = sameHash;
+        }
+        [sameHash addObject:jar];
     }
     if (jarsByHash.count == 0) return NO;
 
@@ -135,7 +141,9 @@ static BOOL IdentifyJars(NSArray<ModJar *> *jars, ModIndex *modIndex, ModrinthMo
         NSDictionary *file = FileWithSha1(version, sha1) ?: [ModVersionSelector primaryFileOfVersion:version];
         NSString *projectId = StringOrNil(version[@"project_id"]);
         NSDictionary *project = projectId ? projects[projectId] : nil;
-        modIndex.entries[jarsByHash[sha1].fileName] = [ModIndex entryForVersion:version file:file ?: @{} project:project];
+        for (ModJar *jar in jarsByHash[sha1]) {
+            modIndex.entries[jar.fileName] = [ModIndex entryForVersion:version file:file ?: @{} project:project];
+        }
     }
     return YES;
 }
@@ -201,6 +209,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 
 @interface ModsViewController () <UIDocumentPickerDelegate, UISearchResultsUpdating>
 @property(nonatomic, readwrite) BOOL busy;
+@property(nonatomic, readonly) BOOL isWorking; // operationRunning || reloading
 @property(nonatomic) BOOL operationRunning;
 @property(nonatomic) BOOL reloading;
 @property(nonatomic) BOOL reloadPending;
@@ -348,7 +357,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 #pragma mark Busy state and operations
 
 - (void)updateBusyState {
-    BOOL busy = self.operationRunning || self.reloading;
+    BOOL busy = self.isWorking;
     if (self.busy != busy) {
         self.busy = busy;
     }
@@ -367,8 +376,14 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     }
 }
 
+/* The state machine runs on the raw flags; `busy` is only their published copy (recomputed by
+   updateBusyState at every transition). */
+- (BOOL)isWorking {
+    return self.operationRunning || self.reloading;
+}
+
 - (void)runOperation:(void (^)(void (^done)(NSError * _Nullable error)))operation {
-    if (self.busy || !self.folder) {
+    if (self.isWorking || !self.folder) {
         return;
     }
     self.operationRunning = YES;
@@ -383,7 +398,10 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
             if (error) {
                 showDialog(localize(@"Error", nil), error.localizedDescription);
             }
+            // Starts the reload (which also covers any reload asked for during the operation) and keeps
+            // `busy` YES until it ends; if no reload can start, this drops `busy` here.
             [self reloadFromDisk];
+            [self updateBusyState];
         });
     };
     operation(done);
@@ -393,7 +411,8 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     if (!self.folder || !self.index) {
         return;
     }
-    if (self.busy) {
+    if (self.isWorking) {
+        // Runs once the current operation or reload ends.
         self.reloadPending = YES;
         return;
     }
@@ -410,11 +429,14 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
         dispatch_async(dispatch_get_main_queue(), ^{
             self.reloading = NO;
             self.loadedOnce = YES;
+            if (self.reloadPending) {
+                // Asked for again while this one ran: start it right away, staying busy throughout.
+                [self reloadFromDisk];
+                [self publishRows:rows];
+                return;
+            }
             [self updateBusyState];
             [self publishRows:rows];
-            if (self.reloadPending) {
-                [self reloadFromDisk];
-            }
         });
     });
 }
@@ -456,7 +478,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 - (NSArray<NSString *> *)enabledDependentTitlesOfRow:(ModsRow *)row {
     NSString *projectId = StringOrNil(row.entry[@"projectId"]);
     // The record is only read here while nothing else is using it.
-    if (!projectId || !self.index || self.busy) {
+    if (!projectId || !self.index || self.isWorking) {
         return @[];
     }
     NSMutableArray<NSString *> *titles = [NSMutableArray new];
@@ -667,7 +689,29 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     if (!self.loadedOnce) {
         return nil;
     }
-    return [NSString stringWithFormat:localize(@"mods.header", nil), (int)self.rows.count, self.info.displayName];
+    return [self headerText];
+}
+
+/* "6 mods · Fabric 0.16.5 · 1.21.1" (no loader version when it is unknown). */
+- (NSString *)headerText {
+    NSUInteger count = self.rows.count;
+    NSMutableArray<NSString *> *parts = [NSMutableArray new];
+    [parts addObject:count == 1 ? localize(@"mods.header.count.one", nil)
+        : [NSString stringWithFormat:localize(@"mods.header.count.other", nil), (int)count]];
+
+    NSDictionary<NSString *, NSString *> *loaderNames = @{
+        @"fabric": @"Fabric", @"quilt": @"Quilt", @"forge": @"Forge", @"neoforge": @"NeoForge"
+    };
+    NSString *loader = self.info.loader;
+    NSString *loaderName = loader ? (loaderNames[loader] ?: loader) : nil;
+    if (loaderName) {
+        NSString *loaderVersion = self.info.loaderVersion;
+        [parts addObject:loaderVersion.length > 0 ? [NSString stringWithFormat:@"%@ %@", loaderName, loaderVersion] : loaderName];
+    }
+    if (self.info.minecraftVersion.length > 0) {
+        [parts addObject:self.info.minecraftVersion];
+    }
+    return [parts componentsJoinedByString:@" · "];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

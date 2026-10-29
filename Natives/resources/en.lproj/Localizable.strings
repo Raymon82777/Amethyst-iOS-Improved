@@ -289,7 +289,8 @@
 "profile.title.install_fabric_quilt" = "Install Fabric/Quilt";
 
 "mods.title" = "Mods";
-"mods.header" = "%d mods · %@";
+"mods.header.count.one" = "1 mod";
+"mods.header.count.other" = "%d mods";
 "mods.empty.vanilla" = "Mods need Fabric, Quilt, Forge or NeoForge. Install a loader from the install menu on the Profiles screen, then set this profile's Version to it.";
 "mods.empty.unknown_version" = "Couldn't tell which Minecraft version this profile uses.";
 "mods.empty.none" = "No mods in this profile yet. Import .jar files with the folder button.";
