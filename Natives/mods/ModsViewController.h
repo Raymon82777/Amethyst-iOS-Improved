@@ -7,8 +7,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /* The Installed Mods screen of one saved profile: one row per jar in the profile's mods folder with an
-   on/off switch, swipe to delete, search, and import from Files. Gives a modded profile that still uses
-   the shared game folder its own folder the first time it opens.
+   on/off switch, swipe to delete, search, and import from Files. Mods with a newer version get an Update
+   tag and an "Update all" banner; mods made for another Minecraft version or loader are flagged with a
+   "Switch all" banner instead. Gives a modded profile that still uses the shared game folder its own
+   folder the first time it opens.
 
    Threading: every file and network job runs on one private serial queue; results are published on the
    main queue. Everything below is meant to be used from the main queue. */
@@ -36,10 +38,18 @@ NS_ASSUME_NONNULL_BEGIN
    the error (if any) and reloads the list. */
 - (void)runOperation:(void (^)(void (^done)(NSError * _Nullable error)))operation;
 
-/* Rescans the folder, prunes the record, identifies new jars on Modrinth (skipped silently offline) and
-   refreshes the list. The work runs on the background queue; asked for while busy, it runs once the
-   current job ends. */
+/* Rescans the folder, prunes the record, identifies new jars on Modrinth, fills in which Minecraft
+   versions and loaders recorded mods were made for, finds the mods that don't fit the profile and checks
+   the others for updates (the network steps are skipped silently offline), then refreshes the list. The
+   work runs on the background queue; asked for while busy, it runs once the current job ends. */
 - (void)reloadFromDisk;
+
+/* From the last reload (empty before it, and offline): Modrinth's newer version (a version object) for
+   each installed mod that fits the profile and has one, keyed by jar file name without ".disabled". */
+@property(nonatomic, readonly) NSDictionary<NSString *, NSDictionary *> *availableUpdates;
+/* From the last reload: jar file names (without ".disabled") of Modrinth mods whose recorded Minecraft
+   versions don't include the profile's, or whose loaders share none with it. Sorted. */
+@property(nonatomic, readonly) NSArray<NSString *> *mismatchedFileNames;
 
 @end
 

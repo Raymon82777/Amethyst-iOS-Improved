@@ -340,6 +340,18 @@
 "mods.error.missing_dependency" = "Nothing was installed. %1$@ is needed, but it has no version for %2$@.";
 "mods.error.install" = "Couldn't install %1$@: %2$@";
 "mods.error.network" = "Couldn't reach Modrinth: %@";
+"mods.row.built_for" = "Built for %@";
+"mods.row.no_version" = "No %@ version yet";
+"mods.tag.update" = "Update";
+"mods.banner.updates.one" = "1 update available";
+"mods.banner.updates.other" = "%d updates available";
+"mods.banner.update_all" = "Update all";
+"mods.banner.mismatch.one" = "1 mod doesn't match Minecraft %@";
+"mods.banner.mismatch.other" = "%1$d mods don't match Minecraft %2$@";
+"mods.banner.switch_all" = "Switch all";
+"mods.error.failed_mod" = "%1$@: %2$@";
+"mods.error.update_failed" = "Not every mod could be updated:\n\n%@";
+"mods.error.switch_failed" = "Not every mod could be switched:\n\n%@";
 
 "controller_configurator.title.current" = "Gamepad configuration file";
 "controller_configurator.title.type.xbox" = "Xbox";

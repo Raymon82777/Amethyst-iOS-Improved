@@ -1,6 +1,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "ModBrowseViewController.h"
 #import "ModDetailViewController.h"
+#import "ModInstallFlow.h"
 #import "ModJarMetadata.h"
 #import "ModVersionSelector.h"
 #import "ModsViewController.h"
@@ -14,6 +15,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 static const CGFloat kDisabledRowAlpha = 0.45;
 static NSString *const kModCellID = @"ModCell";
+static NSString *const kBannerCellID = @"ModBannerCell";
+
+/* The line above the list: mods that don't fit the profile's version or loader win over updates. */
+typedef NS_ENUM(NSInteger, ModsBanner) {
+    ModsBannerNone,
+    ModsBannerUpdates,
+    ModsBannerMismatch
+};
 
 static NSString *GameRoot(void) {
     const char *gameDir = getenv("GAME_DIR");
@@ -23,6 +32,14 @@ static NSString *GameRoot(void) {
 /* `value` when it is a non-empty string. */
 static NSString * _Nullable StringOrNil(id _Nullable value) {
     return [value isKindOfClass:NSString.class] && [value length] > 0 ? value : nil;
+}
+
+/* "Fabric" for "fabric"; unknown loaders as they are. */
+static NSString *LoaderDisplayName(NSString *loader) {
+    NSDictionary<NSString *, NSString *> *names = @{
+        @"fabric": @"Fabric", @"quilt": @"Quilt", @"forge": @"Forge", @"neoforge": @"NeoForge"
+    };
+    return names[loader] ?: loader;
 }
 
 #pragma mark - Rows
@@ -35,11 +52,88 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
 @property(nonatomic) BOOL enabled;
 @property(nonatomic, copy, nullable) NSDictionary *entry; // the record entry, nil when not identified
 @property(nonatomic, copy) NSString *title;
-@property(nonatomic, copy, nullable) NSString *subtitle;
+@property(nonatomic, copy, nullable) NSString *subtitle; // the installed version (or the "Added manually" line)
 @property(nonatomic, nullable) NSURL *iconURL;
+@property(nonatomic, copy, nullable) NSString *sha1;       // Modrinth mods only
+@property(nonatomic) BOOL mismatched;                      // made for another Minecraft version or loader
+@property(nonatomic, copy, nullable) NSString *builtFor;   // what a mismatched mod was made for
+@property(nonatomic, copy, nullable) NSDictionary *update; // Modrinth's newer version, when there is one
 @end
 
 @implementation ModsRow
+@end
+
+/* What one reload found; published to the main queue in one go. */
+@interface ModsLoadResult : NSObject
+@property(nonatomic, copy) NSArray<ModsRow *> *rows;
+@property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *availableUpdates;
+@property(nonatomic, copy) NSArray<NSString *> *mismatchedFileNames;
+@end
+
+@implementation ModsLoadResult
+@end
+
+/* What the reload job remembers between runs. Work queue only. */
+@interface ModsCheckState : NSObject
+/* Hashes already looked up to fill in missing gameVersions/loaders, so a hash Modrinth does not answer
+   for is not asked again while the screen is open. */
+@property(nonatomic) NSMutableSet<NSString *> *backfillTried;
+/* The last update check that worked: the hashes asked about, and the newest version per hash. While the
+   installed mods stay the same (switching one on or off changes nothing here) it is reused instead of
+   asking Modrinth again. */
+@property(nonatomic, copy, nullable) NSDictionary *updateQuery;
+@property(nonatomic, copy, nullable) NSDictionary<NSString *, NSDictionary *> *updateResult;
+@end
+
+@implementation ModsCheckState
+- (instancetype)init {
+    self = [super init];
+    _backfillTried = [NSMutableSet new];
+    return self;
+}
+@end
+
+/* A mod row: icon, title, version line, and on the right an Update tag (when there is an update) beside
+   the on/off switch. */
+@interface ModsCell : UITableViewCell
+@property(nonatomic, readonly) UISwitch *toggle;
+@property(nonatomic, readonly) UIButton *updateButton;
+@property(nonatomic, readonly) UIStackView *accessoryStack;
+- (void)setShowsUpdate:(BOOL)showsUpdate;
+@end
+
+@implementation ModsCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(nullable NSString *)reuseIdentifier {
+    self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier];
+    if (!self) return nil;
+    _toggle = [UISwitch new];
+
+    UIColor *color = UIColor.systemBlueColor;
+    _updateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_updateButton setTitle:localize(@"mods.tag.update", nil) forState:UIControlStateNormal];
+    _updateButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    _updateButton.tintColor = color;
+    _updateButton.backgroundColor = [color colorWithAlphaComponent:0.15];
+    _updateButton.layer.cornerRadius = 6;
+    _updateButton.contentEdgeInsets = UIEdgeInsetsMake(3, 8, 3, 8);
+
+    _accessoryStack = [[UIStackView alloc] initWithArrangedSubviews:@[_updateButton, _toggle]];
+    _accessoryStack.axis = UILayoutConstraintAxisHorizontal;
+    _accessoryStack.alignment = UIStackViewAlignmentCenter;
+    _accessoryStack.spacing = 10;
+    self.accessoryView = _accessoryStack;
+    [self setShowsUpdate:NO];
+    return self;
+}
+
+- (void)setShowsUpdate:(BOOL)showsUpdate {
+    self.updateButton.hidden = !showsUpdate;
+    CGSize size = [self.accessoryStack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+    self.accessoryStack.frame = CGRectMake(0, 0, ceil(size.width), ceil(size.height));
+    [self setNeedsLayout];
+}
+
 @end
 
 #pragma mark - Background work (work queue only)
@@ -150,8 +244,122 @@ static BOOL IdentifyJars(NSArray<ModJar *> *jars, ModIndex *modIndex, ModrinthMo
     return YES;
 }
 
-/* Scans the folder, prunes and fills in the record, and builds the rows sorted by title. */
-static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthModsAPI *api, NSMutableDictionary *cache) {
+/* The sha1 of a recorded jar: the one in the record, else the file's own. Lowercase. */
+static NSString * _Nullable EntrySha1(ModJar *jar, NSDictionary *entry, NSMutableDictionary *cache) {
+    return StringOrNil(entry[@"sha1"]).lowercaseString ?: CachedSha1(jar, cache);
+}
+
+/* YES when the entry says which Minecraft versions and loaders it was made for. */
+static BOOL HasMatchFields(NSDictionary *entry) {
+    return [entry[@"gameVersions"] isKindOfClass:NSArray.class] && [entry[@"loaders"] isKindOfClass:NSArray.class];
+}
+
+/* Fills in gameVersions and loaders of Modrinth entries recorded without them (one hash request).
+   Returns YES if the record changed. A failed request (offline) is tried again next time. */
+static BOOL BackfillMatchFields(NSArray<ModJar *> *jars, ModIndex *modIndex, ModrinthModsAPI *api,
+                                NSMutableDictionary *cache, NSMutableSet<NSString *> *tried) {
+    NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *fileNamesByHash = [NSMutableDictionary new];
+    for (ModJar *jar in jars) {
+        NSDictionary *entry = modIndex.entries[jar.fileName];
+        if (!entry || !StringOrNil(entry[@"projectId"]) || HasMatchFields(entry)) continue;
+        NSString *sha1 = EntrySha1(jar, entry, cache);
+        if (!sha1 || [tried containsObject:sha1]) continue;
+        NSMutableArray<NSString *> *sameHash = fileNamesByHash[sha1];
+        if (!sameHash) {
+            sameHash = [NSMutableArray new];
+            fileNamesByHash[sha1] = sameHash;
+        }
+        [sameHash addObject:jar.fileName];
+    }
+    if (fileNamesByHash.count == 0) return NO;
+
+    NSDictionary<NSString *, NSDictionary *> *versions = [api versionsForHashes:fileNamesByHash.allKeys];
+    if (!versions) return NO;
+    [tried addObjectsFromArray:fileNamesByHash.allKeys];
+
+    BOOL changed = NO;
+    for (NSString *sha1 in fileNamesByHash) {
+        NSDictionary *version = VersionForHash(versions, sha1);
+        id gameVersions = version[@"game_versions"];
+        id loaders = version[@"loaders"];
+        if (![gameVersions isKindOfClass:NSArray.class] || ![loaders isKindOfClass:NSArray.class]) continue;
+        for (NSString *fileName in fileNamesByHash[sha1]) {
+            NSMutableDictionary *entry = [modIndex.entries[fileName] mutableCopy];
+            if (!entry) continue;
+            entry[@"gameVersions"] = gameVersions;
+            entry[@"loaders"] = loaders;
+            modIndex.entries[fileName] = entry;
+            changed = YES;
+        }
+    }
+    return changed;
+}
+
+/* The newest version for the profile of the project each hash belongs to, keyed by the hash as given.
+   Mods installed as a release are only offered releases. Asks Modrinth (two requests) only when the
+   hashes differ from the last check that worked; nil when a request failed (offline). */
+static NSDictionary<NSString *, NSDictionary *> * _Nullable LatestVersions(NSArray<NSString *> *releaseHashes,
+        NSArray<NSString *> *otherHashes, NSArray<NSString *> *loaders, NSString *mc, ModrinthModsAPI *api,
+        ModsCheckState *state) {
+    NSDictionary *query = @{
+        @"release": [releaseHashes sortedArrayUsingSelector:@selector(compare:)],
+        @"other": [otherHashes sortedArrayUsingSelector:@selector(compare:)]
+    };
+    if (state.updateResult && [query isEqual:state.updateQuery]) {
+        return state.updateResult;
+    }
+    NSDictionary<NSString *, NSDictionary *> *releases = [api latestVersionsForHashes:releaseHashes
+        loaders:loaders gameVersion:mc versionTypes:@[@"release"]];
+    if (!releases) return nil;
+    NSDictionary<NSString *, NSDictionary *> *others = [api latestVersionsForHashes:otherHashes
+        loaders:loaders gameVersion:mc versionTypes:nil];
+    if (!others) return nil;
+
+    NSMutableDictionary<NSString *, NSDictionary *> *result = [NSMutableDictionary new];
+    for (NSString *sha1 in releaseHashes) {
+        NSDictionary *version = VersionForHash(releases, sha1);
+        if (version) result[sha1] = version;
+    }
+    for (NSString *sha1 in otherHashes) {
+        NSDictionary *version = VersionForHash(others, sha1);
+        if (version) result[sha1] = version;
+    }
+    state.updateQuery = query;
+    state.updateResult = result;
+    return result;
+}
+
+/* The newest of the Minecraft versions, e.g. "1.21.1" of ["1.21", "1.21.1"]. */
+static NSString * _Nullable NewestGameVersion(NSArray *gameVersions) {
+    NSString *newest;
+    for (id each in gameVersions) {
+        NSString *gameVersion = StringOrNil(each);
+        if (gameVersion && (!newest || [gameVersion compare:newest options:NSNumericSearch] == NSOrderedDescending)) {
+            newest = gameVersion;
+        }
+    }
+    return newest;
+}
+
+/* What a mismatched mod was made for: its newest Minecraft version, or its loaders ("Fabric/Quilt")
+   when the Minecraft version is the profile's and only the loader differs. */
+static NSString * _Nullable BuiltForText(NSDictionary *entry, NSString *mc) {
+    NSArray *gameVersions = entry[@"gameVersions"];
+    if ([gameVersions containsObject:mc]) {
+        NSMutableArray<NSString *> *names = [NSMutableArray new];
+        for (id each in (NSArray *)entry[@"loaders"]) {
+            NSString *loader = StringOrNil(each);
+            if (loader) [names addObject:LoaderDisplayName(loader)];
+        }
+        return names.count > 0 ? [names componentsJoinedByString:@"/"] : nil;
+    }
+    return NewestGameVersion(gameVersions);
+}
+
+/* Scans the folder, prunes and fills in the record, then finds the mods that don't fit the profile and
+   (for the ones that do) the updates. Builds the rows sorted by title. */
+static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthModsAPI *api, NSMutableDictionary *cache,
+                                ModsCheckState *checkState, NSArray<NSString *> *loaders, NSString *mc) {
     NSArray<ModJar *> *jars = [folder scanJars];
 
     NSMutableSet<NSString *> *fileNames = [NSMutableSet new];
@@ -164,8 +372,51 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     if (IdentifyJars(jars, modIndex, api, cache)) {
         changed = YES;
     }
+    if (BackfillMatchFields(jars, modIndex, api, cache, checkState.backfillTried)) {
+        changed = YES;
+    }
     if (changed) {
         [modIndex save:nil];
+    }
+
+    // Mods made for another version or loader, and the hashes of the others for the update check.
+    // Entries that don't say what they were made for (the lookup failed) are neither flagged nor checked.
+    NSMutableDictionary<NSString *, NSString *> *sha1ByFileName = [NSMutableDictionary new];
+    NSMutableSet<NSString *> *mismatched = [NSMutableSet new];
+    NSMutableArray<NSString *> *matching = [NSMutableArray new];
+    NSMutableArray<NSString *> *releaseHashes = [NSMutableArray new];
+    NSMutableArray<NSString *> *otherHashes = [NSMutableArray new];
+    for (ModJar *jar in jars) {
+        NSDictionary *entry = modIndex.entries[jar.fileName];
+        if (!entry || !StringOrNil(entry[@"projectId"])) continue;
+        NSString *sha1 = EntrySha1(jar, entry, cache);
+        if (sha1) sha1ByFileName[jar.fileName] = sha1;
+        if (!HasMatchFields(entry)) continue;
+        if (![ModIndex entry:entry matchesLoaders:loaders gameVersion:mc]) {
+            [mismatched addObject:jar.fileName];
+            continue;
+        }
+        if (!sha1) continue;
+        [matching addObject:jar.fileName];
+        // Disabled mods are checked too: an update keeps them disabled. No type counts as a release.
+        NSString *type = StringOrNil(entry[@"versionType"]);
+        if (!type || [type isEqualToString:@"release"]) {
+            [releaseHashes addObject:sha1];
+        } else {
+            [otherHashes addObject:sha1];
+        }
+    }
+
+    NSMutableDictionary<NSString *, NSDictionary *> *updates = [NSMutableDictionary new];
+    NSDictionary<NSString *, NSDictionary *> *latest = LatestVersions(releaseHashes, otherHashes, loaders, mc, api, checkState);
+    for (NSString *fileName in matching) {
+        NSDictionary *entry = modIndex.entries[fileName];
+        NSDictionary *version = latest[sha1ByFileName[fileName]];
+        NSString *versionId = StringOrNil(version[@"id"]);
+        NSString *installedId = StringOrNil(entry[@"versionId"]);
+        if (!versionId || (installedId && [versionId isEqualToString:installedId])) continue;
+        if (![version[@"project_id"] isEqual:entry[@"projectId"]]) continue;
+        updates[fileName] = version;
     }
 
     // Forget files that are gone.
@@ -195,6 +446,10 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
             row.subtitle = version;
             NSString *iconUrl = StringOrNil(entry[@"iconUrl"]);
             row.iconURL = iconUrl ? [NSURL URLWithString:iconUrl] : nil;
+            row.sha1 = sha1ByFileName[jar.fileName];
+            row.mismatched = [mismatched containsObject:jar.fileName];
+            row.builtFor = row.mismatched ? BuiltForText(entry, mc) : nil;
+            row.update = updates[jar.fileName];
         } else {
             row.subtitle = version ? [NSString stringWithFormat:@"%@ · %@", version, manualLabel] : manualLabel;
         }
@@ -204,7 +459,12 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
         NSComparisonResult result = [a.title localizedStandardCompare:b.title];
         return result != NSOrderedSame ? result : [a.fileName localizedStandardCompare:b.fileName];
     }];
-    return rows;
+
+    ModsLoadResult *result = [ModsLoadResult new];
+    result.rows = rows;
+    result.availableUpdates = updates;
+    result.mismatchedFileNames = [mismatched.allObjects sortedArrayUsingSelector:@selector(compare:)];
+    return result;
 }
 
 #pragma mark - ModsViewController
@@ -219,10 +479,16 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 @property(nonatomic) BOOL showFolderNotice;
 @property(nonatomic) dispatch_queue_t workQueue;
 @property(nonatomic) NSMutableDictionary *jarCache; // work queue only
+@property(nonatomic) ModsCheckState *checkState;   // work queue only
 
 @property(nonatomic) NSArray<ModsRow *> *rows;
 @property(nonatomic) NSArray<ModsRow *> *visibleRows;
 @property(nonatomic) NSDictionary<NSString *, ModsRow *> *rowsByFileName;
+@property(nonatomic, readwrite) NSDictionary<NSString *, NSDictionary *> *availableUpdates;
+@property(nonatomic, readwrite) NSArray<NSString *> *mismatchedFileNames;
+/* Mismatched mods that the last Switch all found no version for ("No 1.21.4 version yet"). Lives as long
+   as this screen; a profile's Minecraft version or loader can only change while the screen is closed. */
+@property(nonatomic) NSSet<NSString *> *noVersionFileNames;
 
 @property(nonatomic, nullable) UISearchController *searchController;
 @property(nonatomic, nullable) UIBarButtonItem *addItem;
@@ -238,9 +504,13 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     _api = [ModrinthModsAPI new];
     _workQueue = dispatch_queue_create("net.kdt.pojavlaunch.mods", DISPATCH_QUEUE_SERIAL);
     _jarCache = [NSMutableDictionary new];
+    _checkState = [ModsCheckState new];
     _rows = @[];
     _visibleRows = @[];
     _rowsByFileName = @{};
+    _availableUpdates = @{};
+    _mismatchedFileNames = @[];
+    _noVersionFileNames = [NSSet set];
 
     NSString *versionId = PLProfiles.current.profiles[profileName][@"lastVersionId"];
     NSString *versionsDir = [GameRoot() stringByAppendingPathComponent:@"versions"];
@@ -378,8 +648,12 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
         [self.spinner stopAnimating];
     }
     for (UITableViewCell *cell in self.tableView.visibleCells) {
-        if ([cell.accessoryView isKindOfClass:UISwitch.class]) {
-            ((UISwitch *)cell.accessoryView).enabled = !busy;
+        if ([cell isKindOfClass:ModsCell.class]) {
+            ((ModsCell *)cell).toggle.enabled = !busy;
+            ((ModsCell *)cell).updateButton.enabled = !busy;
+        } else if ([cell.accessoryView isKindOfClass:UIButton.class]) {
+            // The banner's Update all / Switch all.
+            ((UIButton *)cell.accessoryView).enabled = !busy;
         }
     }
 }
@@ -432,21 +706,34 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     ModIndex *modIndex = self.index;
     ModrinthModsAPI *api = self.api;
     NSMutableDictionary *cache = self.jarCache;
+    ModsCheckState *checkState = self.checkState;
+    NSArray<NSString *> *loaders = self.info.acceptedLoaders;
+    NSString *mc = self.info.minecraftVersion ?: @"";
     dispatch_async(self.workQueue, ^{
-        NSArray<ModsRow *> *rows = LoadRows(folder, modIndex, api, cache);
+        ModsLoadResult *result = LoadRows(folder, modIndex, api, cache, checkState, loaders, mc);
         dispatch_async(dispatch_get_main_queue(), ^{
             self.reloading = NO;
             self.loadedOnce = YES;
             if (self.reloadPending) {
                 // Asked for again while this one ran: start it right away, staying busy throughout.
                 [self reloadFromDisk];
-                [self publishRows:rows];
+                [self publishResult:result];
                 return;
             }
             [self updateBusyState];
-            [self publishRows:rows];
+            [self publishResult:result];
         });
     });
+}
+
+- (void)publishResult:(ModsLoadResult *)result {
+    self.availableUpdates = result.availableUpdates;
+    self.mismatchedFileNames = result.mismatchedFileNames;
+    // A mod that fits again (switched from its detail page, or deleted) loses its "no version yet" note.
+    NSMutableSet<NSString *> *noVersion = [self.noVersionFileNames mutableCopy];
+    [noVersion intersectSet:[NSSet setWithArray:result.mismatchedFileNames]];
+    self.noVersionFileNames = noVersion;
+    [self publishRows:result.rows];
 }
 
 - (void)publishRows:(NSArray<ModsRow *> *)rows {
@@ -525,10 +812,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 - (nullable ModsRow *)rowForView:(UIView *)view {
     CGPoint point = [view convertPoint:CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds)) toView:self.tableView];
     NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
-    if (!indexPath || indexPath.row >= self.visibleRows.count) {
-        return nil;
-    }
-    return self.visibleRows[indexPath.row];
+    return indexPath ? [self modRowAtIndexPath:indexPath] : nil;
 }
 
 - (void)switchChanged:(UISwitch *)sender {
@@ -594,6 +878,199 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
             done(ok ? nil : error);
         });
     }];
+}
+
+#pragma mark Updates and version changes
+
+- (ModInstallFlow *)makeInstallFlow {
+    return [[ModInstallFlow alloc] initWithLoaders:self.info.acceptedLoaders gameVersion:self.info.minecraftVersion ?: @""
+        profileName:self.info.displayName fetchCache:[ModFetchCache new]];
+}
+
+/* `fileNames` in the order of the list (by title); names without a row are left out. */
+- (NSArray<NSString *> *)fileNamesInListOrder:(NSArray<NSString *> *)fileNames {
+    NSSet<NSString *> *wanted = [NSSet setWithArray:fileNames];
+    NSMutableArray<NSString *> *ordered = [NSMutableArray new];
+    for (ModsRow *row in self.rows) {
+        if ([wanted containsObject:row.fileName]) {
+            [ordered addObject:row.fileName];
+        }
+    }
+    return ordered;
+}
+
+- (NSDictionary<NSString *, NSString *> *)titlesOfFileNames:(NSArray<NSString *> *)fileNames {
+    NSMutableDictionary<NSString *, NSString *> *titles = [NSMutableDictionary new];
+    for (NSString *fileName in fileNames) {
+        titles[fileName] = self.rowsByFileName[fileName].title ?: fileName;
+    }
+    return titles;
+}
+
+/* Project id -> title of every Modrinth mod in the list (saves a lookup when naming a missing dependency). */
+- (NSDictionary<NSString *, NSString *> *)knownProjectTitles {
+    NSMutableDictionary<NSString *, NSString *> *titles = [NSMutableDictionary new];
+    for (ModsRow *row in self.rows) {
+        NSString *projectId = [self projectIdOfRow:row];
+        if (projectId) titles[projectId] = row.title;
+    }
+    return titles;
+}
+
+/* "Sodium: <what went wrong>" */
+static NSString *FailureLine(NSString *title, NSString *message) {
+    return [NSString stringWithFormat:localize(@"mods.error.failed_mod", nil), title, message];
+}
+
+/* One error listing every mod that failed, or nil when none did. */
+static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *messageKey) {
+    if (lines.count == 0) {
+        return nil;
+    }
+    NSString *message = [NSString stringWithFormat:localize(messageKey, nil), [lines componentsJoinedByString:@"\n\n"]];
+    return ModDisplayError(message, nil);
+}
+
+/* Installs each version (jar file name -> Modrinth version) as its own set, one after the other in one
+   operation, so one failure does not stop the others. Failures are shown together at the end. */
+- (void)installVersions:(NSDictionary<NSString *, NSDictionary *> *)versions failureKey:(NSString *)failureKey {
+    if (self.busy || !self.folder || !self.index || versions.count == 0) {
+        return;
+    }
+    NSArray<NSString *> *fileNames = [self fileNamesInListOrder:versions.allKeys];
+    NSDictionary<NSString *, NSString *> *titles = [self titlesOfFileNames:fileNames];
+    NSDictionary<NSString *, NSString *> *knownTitles = [self knownProjectTitles];
+    ModInstallFlow *flow = [self makeInstallFlow];
+    ModFolder *folder = self.folder;
+    ModIndex *modIndex = self.index;
+    ModrinthModsAPI *api = self.api;
+    dispatch_queue_t queue = self.workQueue;
+    [self runOperation:^(void (^done)(NSError * _Nullable)) {
+        dispatch_async(queue, ^{
+            NSMutableArray<NSString *> *failures = [NSMutableArray new];
+            for (NSString *fileName in fileNames) {
+                NSString *title = titles[fileName] ?: fileName;
+                NSDictionary *version = versions[fileName];
+                if (!version) continue;
+                NSError *error = [flow installVersion:version title:title index:modIndex folder:folder
+                    api:api knownTitles:knownTitles];
+                if (error) {
+                    [failures addObject:FailureLine(title, error.localizedDescription ?: @"")];
+                }
+            }
+            done(FailureSummary(failures, failureKey));
+        });
+    }];
+}
+
+/* The Update tag of a row: installs that mod's newer version. */
+- (void)updateTapped:(UIButton *)sender {
+    ModsRow *row = [self rowForView:sender];
+    NSDictionary *version = row ? self.availableUpdates[row.fileName] : nil;
+    if (!row || !version || self.busy) {
+        return;
+    }
+    [self installVersions:@{row.fileName: version} failureKey:@"mods.error.update_failed"];
+}
+
+- (void)actionUpdateAll {
+    [self installVersions:self.availableUpdates failureKey:@"mods.error.update_failed"];
+}
+
+/* Replaces every mismatched mod with its newest version for the profile (a release when there is one,
+   as when installing), each as its own set. Mods with no such version keep their file and their flag. */
+- (void)actionSwitchAll {
+    if (self.busy || !self.folder || !self.index) {
+        return;
+    }
+    NSMutableArray<NSString *> *fileNames = [NSMutableArray new];
+    NSMutableDictionary<NSString *, NSString *> *hashes = [NSMutableDictionary new];
+    for (NSString *fileName in [self fileNamesInListOrder:self.mismatchedFileNames]) {
+        NSString *sha1 = self.rowsByFileName[fileName].sha1;
+        if (!sha1) continue; // the file could not be read; it stays flagged
+        [fileNames addObject:fileName];
+        hashes[fileName] = sha1;
+    }
+    if (fileNames.count == 0) {
+        return;
+    }
+    NSDictionary<NSString *, NSString *> *titles = [self titlesOfFileNames:fileNames];
+    NSDictionary<NSString *, NSString *> *knownTitles = [self knownProjectTitles];
+    ModInstallFlow *flow = [self makeInstallFlow];
+    NSArray<NSString *> *loaders = flow.loaders;
+    NSString *mc = flow.gameVersion;
+    ModFolder *folder = self.folder;
+    ModIndex *modIndex = self.index;
+    ModrinthModsAPI *api = self.api;
+    dispatch_queue_t queue = self.workQueue;
+    __weak ModsViewController *weakSelf = self;
+    [self runOperation:^(void (^done)(NSError * _Nullable)) {
+        dispatch_async(queue, ^{
+            NSArray<NSString *> *allHashes = hashes.allValues;
+            NSDictionary<NSString *, NSDictionary *> *releases = [api latestVersionsForHashes:allHashes
+                loaders:loaders gameVersion:mc versionTypes:@[@"release"]];
+            if (!releases) {
+                NSString *reason = api.lastError.localizedDescription ?: @"";
+                done(ModDisplayError([NSString stringWithFormat:localize(@"mods.error.network", nil), reason], api.lastError));
+                return;
+            }
+            NSMutableArray<NSString *> *leftovers = [NSMutableArray new];
+            for (NSString *sha1 in allHashes) {
+                if (!VersionForHash(releases, sha1)) [leftovers addObject:sha1];
+            }
+            // Any type for the mods without a release (no request when there are none).
+            NSDictionary<NSString *, NSDictionary *> *others = [api latestVersionsForHashes:leftovers
+                loaders:loaders gameVersion:mc versionTypes:nil];
+            NSString *othersFailure = others ? nil : [NSString stringWithFormat:localize(@"mods.error.network", nil),
+                api.lastError.localizedDescription ?: @""];
+
+            NSMutableSet<NSString *> *noVersion = [NSMutableSet new];
+            NSMutableArray<NSString *> *failures = [NSMutableArray new];
+            for (NSString *fileName in fileNames) {
+                NSString *title = titles[fileName] ?: fileName;
+                NSString *sha1 = hashes[fileName] ?: @"";
+                NSDictionary *version = VersionForHash(releases, sha1);
+                if (!version && others) {
+                    version = VersionForHash(others, sha1);
+                }
+                if (!version) {
+                    if (othersFailure) {
+                        [failures addObject:FailureLine(title, othersFailure)];
+                    } else {
+                        [noVersion addObject:fileName];
+                    }
+                    continue;
+                }
+                NSError *error = [flow installVersion:version title:title index:modIndex folder:folder
+                    api:api knownTitles:knownTitles];
+                if (error) {
+                    [failures addObject:FailureLine(title, error.localizedDescription ?: @"")];
+                }
+            }
+            // Queued before `done`'s own hop to the main queue, so the reload that `done` starts shows the notes.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                weakSelf.noVersionFileNames = noVersion;
+            });
+            done(FailureSummary(failures, @"mods.error.switch_failed"));
+        });
+    }];
+}
+
+/* The banner's button. */
+- (void)bannerAction:(UIButton *)sender {
+    if (self.busy) {
+        return;
+    }
+    switch ([self currentBanner]) {
+        case ModsBannerMismatch:
+            [self actionSwitchAll];
+            break;
+        case ModsBannerUpdates:
+            [self actionUpdateAll];
+            break;
+        case ModsBannerNone:
+            break;
+    }
 }
 
 #pragma mark Browse and detail
@@ -711,16 +1188,39 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 
 #pragma mark UITableViewDataSource
 
+/* Mismatched mods win over updates (spec §12b); nothing before the first reload. */
+- (ModsBanner)currentBanner {
+    if (!self.loadedOnce) {
+        return ModsBannerNone;
+    }
+    if (self.mismatchedFileNames.count > 0) {
+        return ModsBannerMismatch;
+    }
+    return self.availableUpdates.count > 0 ? ModsBannerUpdates : ModsBannerNone;
+}
+
+/* The banner, when there is one, is a section of its own above the mods. */
+- (NSInteger)modsSection {
+    return [self currentBanner] == ModsBannerNone ? 0 : 1;
+}
+
+- (nullable ModsRow *)modRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != [self modsSection] || indexPath.row < 0 || indexPath.row >= (NSInteger)self.visibleRows.count) {
+        return nil;
+    }
+    return self.visibleRows[indexPath.row];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.folder ? 1 : 0;
+    return self.folder ? [self modsSection] + 1 : 0;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.visibleRows.count;
+    return section == [self modsSection] ? self.visibleRows.count : 1;
 }
 
 - (nullable NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (!self.loadedOnce) {
+    if (!self.loadedOnce || section != 0) {
         return nil;
     }
     return [self headerText];
@@ -733,11 +1233,8 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     [parts addObject:count == 1 ? localize(@"mods.header.count.one", nil)
         : [NSString stringWithFormat:localize(@"mods.header.count.other", nil), (int)count]];
 
-    NSDictionary<NSString *, NSString *> *loaderNames = @{
-        @"fabric": @"Fabric", @"quilt": @"Quilt", @"forge": @"Forge", @"neoforge": @"NeoForge"
-    };
     NSString *loader = self.info.loader;
-    NSString *loaderName = loader ? (loaderNames[loader] ?: loader) : nil;
+    NSString *loaderName = loader ? LoaderDisplayName(loader) : nil;
     if (loaderName) {
         NSString *loaderVersion = self.info.loaderVersion;
         [parts addObject:loaderVersion.length > 0 ? [NSString stringWithFormat:@"%@ %@", loaderName, loaderVersion] : loaderName];
@@ -748,22 +1245,80 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     return [parts componentsJoinedByString:@" · "];
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kModCellID];
+/* "3 updates available" or "2 mods don't match Minecraft 1.21.4". */
+- (NSString *)bannerText {
+    if ([self currentBanner] == ModsBannerMismatch) {
+        NSUInteger count = self.mismatchedFileNames.count;
+        NSString *mc = self.info.minecraftVersion ?: @"";
+        return count == 1 ? [NSString stringWithFormat:localize(@"mods.banner.mismatch.one", nil), mc]
+            : [NSString stringWithFormat:localize(@"mods.banner.mismatch.other", nil), (int)count, mc];
+    }
+    NSUInteger count = self.availableUpdates.count;
+    return count == 1 ? localize(@"mods.banner.updates.one", nil)
+        : [NSString stringWithFormat:localize(@"mods.banner.updates.other", nil), (int)count];
+}
+
+- (UITableViewCell *)bannerCellForTableView:(UITableView *)tableView {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kBannerCellID];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kModCellID];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kBannerCellID];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.numberOfLines = 0;
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        [button addTarget:self action:@selector(bannerAction:) forControlEvents:UIControlEventTouchUpInside];
+        cell.accessoryView = button;
+    }
+    BOOL mismatch = [self currentBanner] == ModsBannerMismatch;
+    cell.imageView.image = [UIImage systemImageNamed:mismatch ? @"exclamationmark.triangle.fill" : @"arrow.down.circle.fill"];
+    cell.imageView.tintColor = mismatch ? UIColor.systemOrangeColor : UIColor.systemBlueColor;
+    cell.textLabel.text = [self bannerText];
+
+    UIButton *button = (UIButton *)cell.accessoryView;
+    [button setTitle:localize(mismatch ? @"mods.banner.switch_all" : @"mods.banner.update_all", nil) forState:UIControlStateNormal];
+    [button sizeToFit];
+    button.enabled = !self.busy;
+    return cell;
+}
+
+/* The version line: "0.6.0", "0.5.11 → 0.6.0" with an update, or "0.6.0 · Built for 1.21.1" (in orange)
+   for a mod made for another Minecraft version or loader. */
+- (nullable NSString *)subtitleForRow:(ModsRow *)row warning:(BOOL *)warning {
+    *warning = NO;
+    if (row.mismatched) {
+        *warning = YES;
+        NSString *note = [self.noVersionFileNames containsObject:row.fileName]
+            ? [NSString stringWithFormat:localize(@"mods.row.no_version", nil), self.info.minecraftVersion ?: @""]
+            : [NSString stringWithFormat:localize(@"mods.row.built_for", nil), row.builtFor ?: @"?"];
+        return row.subtitle ? [NSString stringWithFormat:@"%@ · %@", row.subtitle, note] : note;
+    }
+    if (row.update) {
+        NSString *newVersion = StringOrNil(row.update[@"version_number"]) ?: StringOrNil(row.update[@"name"]) ?: @"?";
+        return [NSString stringWithFormat:@"%@ → %@", row.subtitle ?: @"?", newVersion];
+    }
+    return row.subtitle;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    ModsRow *row = [self modRowAtIndexPath:indexPath];
+    if (!row) {
+        return [self bannerCellForTableView:tableView];
+    }
+
+    ModsCell *cell = (ModsCell *)[tableView dequeueReusableCellWithIdentifier:kModCellID];
+    if (!cell) {
+        cell = [[ModsCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kModCellID];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.imageView.frame = CGRectMake(0, 0, 40, 40);
         cell.imageView.isSizeFixed = YES;
-        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        UISwitch *toggle = [UISwitch new];
-        [toggle addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = toggle;
+        [cell.toggle addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];
+        [cell.updateButton addTarget:self action:@selector(updateTapped:) forControlEvents:UIControlEventTouchUpInside];
     }
 
-    ModsRow *row = self.visibleRows[indexPath.row];
     cell.textLabel.text = row.title;
-    cell.detailTextLabel.text = row.subtitle;
+    BOOL warning = NO;
+    cell.detailTextLabel.text = [self subtitleForRow:row warning:&warning];
+    cell.detailTextLabel.textColor = warning ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor;
     // Mods from Modrinth open their detail page.
     cell.selectionStyle = [self projectIdOfRow:row] ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     UIImage *placeholder = [[UIImage imageNamed:@"DefaultProfile"] _imageWithSize:CGSizeMake(40, 40)];
@@ -775,9 +1330,10 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
         cell.imageView.image = placeholder;
     }
 
-    UISwitch *toggle = (UISwitch *)cell.accessoryView;
-    [toggle setOn:row.enabled animated:NO];
-    toggle.enabled = !self.busy;
+    [cell setShowsUpdate:row.update != nil];
+    cell.updateButton.enabled = !self.busy;
+    [cell.toggle setOn:row.enabled animated:NO];
+    cell.toggle.enabled = !self.busy;
     cell.contentView.alpha = row.enabled ? 1 : kDisabledRowAlpha;
     return cell;
 }
@@ -785,25 +1341,27 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 #pragma mark UITableViewDelegate
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
-    return indexPath.row < (NSInteger)self.visibleRows.count && [self projectIdOfRow:self.visibleRows[indexPath.row]] != nil;
+    ModsRow *row = [self modRowAtIndexPath:indexPath];
+    return row && [self projectIdOfRow:row] != nil;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.row < (NSInteger)self.visibleRows.count) {
-        [self showDetailOfRow:self.visibleRows[indexPath.row]];
+    ModsRow *row = [self modRowAtIndexPath:indexPath];
+    if (row) {
+        [self showDetailOfRow:row];
     }
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
-    return !self.busy;
+    return !self.busy && [self modRowAtIndexPath:indexPath] != nil;
 }
 
 - (nullable UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (self.busy || indexPath.row >= self.visibleRows.count) {
+    ModsRow *row = [self modRowAtIndexPath:indexPath];
+    if (self.busy || !row) {
         return [UISwipeActionsConfiguration configurationWithActions:@[]];
     }
-    ModsRow *row = self.visibleRows[indexPath.row];
     __weak ModsViewController *weakSelf = self;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
         title:localize(@"mods.action.delete", nil)
