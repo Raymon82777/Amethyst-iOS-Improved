@@ -254,7 +254,11 @@
     NSString *version = self.profile[@"lastVersionId"];
     BOOL nameChanged = name.length > 0 && ![name isEqualToString:self.oldName];
     BOOL versionChanged = !(version == saved[@"lastVersionId"] || [version isEqualToString:saved[@"lastVersionId"]]);
-    if (!nameChanged && !versionChanged) {
+    // A missing Game directory and an empty one both mean the shared folder.
+    NSString *gameDir = self.profile[@"gameDir"] ?: @"";
+    NSString *savedGameDir = saved[@"gameDir"] ?: @"";
+    BOOL gameDirChanged = ![gameDir isEqual:savedGameDir];
+    if (!nameChanged && !versionChanged && !gameDirChanged) {
         [self pushModsViewController];
         return;
     }
@@ -282,10 +286,6 @@
         if (!strongSelf) return;
         // Keep the editor's copy in step with the saved profile, so a later Done does not undo the move
         strongSelf.profile[@"gameDir"] = newGameDir;
-        NSString *notice = PLProfiles.current.profiles[profileName][@"modsFolderNotice"];
-        if (notice) {
-            strongSelf.profile[@"modsFolderNotice"] = notice;
-        }
         [strongSelf.tableView reloadData];
     };
     [self.navigationController pushViewController:vc animated:YES];

@@ -68,6 +68,9 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
 
     self.tableView.tableHeaderView = [self filterChipView];
+    // Pull to search again, e.g. after a failure.
+    self.refreshControl = [UIRefreshControl new];
+    [self.refreshControl addTarget:self action:@selector(retrySearch) forControlEvents:UIControlEventValueChanged];
     [self refreshInstalledProjects];
     [self loadQuery:@"" append:NO];
 }
@@ -111,13 +114,18 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
 }
 
 - (void)showMessage:(nullable NSString *)message {
+    [self showMessage:message retry:NO];
+}
+
+/* With `retry`, the message says "Tap to try again." and a tap on it searches again. */
+- (void)showMessage:(nullable NSString *)message retry:(BOOL)retry {
     if (!message) {
         self.tableView.backgroundView = nil;
         return;
     }
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.text = message;
+    label.text = retry ? [NSString stringWithFormat:@"%@\n\n%@", message, localize(@"mods.detail.retry", nil)] : message;
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentCenter;
     label.textColor = UIColor.secondaryLabelColor;
@@ -131,7 +139,17 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
         [label.leadingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.leadingAnchor constant:16],
         [label.trailingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.trailingAnchor constant:-16]
     ]];
+    if (retry) {
+        [container addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(retrySearch)]];
+    }
     self.tableView.backgroundView = container;
+}
+
+/* Searches the current text again from the first page (the tap on a failure message, or pull to refresh). */
+- (void)retrySearch {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateSearchResults) object:nil];
+    [self showMessage:nil];
+    [self loadQuery:[self currentQuery] append:NO];
 }
 
 #pragma mark Installed tags
@@ -218,6 +236,7 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
             if (!strongSelf || generation != strongSelf.generation) return;
             strongSelf.loading = NO;
             [strongSelf.spinner stopAnimating];
+            [strongSelf.refreshControl endRefreshing];
             NSString *message = [NSString stringWithFormat:localize(@"mods.browse.error", nil), failure ?: @""];
             if (!result) {
                 if (append) {
@@ -226,7 +245,7 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
                 } else {
                     strongSelf.hits = @[];
                     strongSelf.loadedQuery = nil; // so the same search is tried again
-                    [strongSelf showMessage:message];
+                    [strongSelf showMessage:message retry:YES];
                     [strongSelf.tableView reloadData];
                 }
                 return;
