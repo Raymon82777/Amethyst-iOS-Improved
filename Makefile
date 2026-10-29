@@ -182,6 +182,8 @@ METHOD_MACHO = \
 	done
 
 # Make sure everything is already available for use. Error if they require something
+# (skipped for test_mods, which only needs clang and runs on a bare macOS host)
+ifneq ($(MAKECMDGOALS),test_mods)
 ifneq ($(call METHOD_DEPCHECK,cmake --version),1)
 $(error You need to install cmake)
 endif
@@ -210,6 +212,8 @@ $(error You need to install lld)
 endif
 endif
 
+endif
+
 ifneq ($(filter sysctl,$(shell sysctl -n hw.logicalcpu)),)
 ifneq ($(call METHOD_DEPCHECK,nproc --version),1)
 ifneq ($(call METHOD_DEPCHECK,gnproc --version),1)
@@ -225,8 +229,10 @@ else
 JOBS   ?= $(shell sysctl -n hw.logicalcpu)
 endif
 
+ifneq ($(MAKECMDGOALS),test_mods)
 ifndef SDKPATH
 $(error You need to specify SDKPATH to the path of iPhoneOS.sdk. The SDK version should be 14.0 or newer.)
+endif
 endif
 
 all: clean native java jre assets payload package dsym
@@ -248,6 +254,7 @@ help:
 	echo '    make dsym                           Generate debug symbol files'
 	echo '    make clean                          Cleans build directories'
 	echo '    make check                          Dump all variables for checking'
+	echo '    make test_mods                      Builds and runs the host-side mod manager unit tests (macOS)'
 
 check:
 	$(foreach v, \
@@ -323,6 +330,17 @@ dep_mg:
 	cp $(WORKINGDIR)/mobileglues/libmobileglues.dylib $(WORKINGDIR)/libmobileglues.dylib
 	cp $(SOURCEDIR)/Natives/external/MobileGlues/src/main/cpp/libraries/ios/libspirv-cross-c-shared.0.dylib $(WORKINGDIR)/libspirv-cross-c-shared.0.dylib
 	echo '[Amethyst v$(VERSION)] dep_mg - end'
+
+test_mods:
+	echo '[Amethyst v$(VERSION)] test_mods - start'
+	mkdir -p $(WORKINGDIR)/tests
+	xcrun --sdk macosx clang -fobjc-arc -fmodules -framework Foundation \
+		-I$(SOURCEDIR)/Natives/mods -I$(SOURCEDIR)/Natives/tests/mods \
+		$(SOURCEDIR)/Natives/mods/ModProfileInfo.m \
+		$(SOURCEDIR)/Natives/tests/mods/*.m \
+		-o $(WORKINGDIR)/tests/mods_tests
+	$(WORKINGDIR)/tests/mods_tests
+	echo '[Amethyst v$(VERSION)] test_mods - end'
 
 dep_sdl:
 	echo '[Amethyst v$(VERSION)] dep_sdl - start'
@@ -472,4 +490,4 @@ clean:
 
 		
 
-.PHONY: all clean check native java jre package dsym deploy help dep_sdl dep_jna
+.PHONY: all clean check native java jre package dsym deploy help dep_sdl dep_jna test_mods
