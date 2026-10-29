@@ -26,6 +26,26 @@ static BOOL IsPlainFileName(id _Nullable name) {
     return string.length > 0 && ![string isEqualToString:@"."] && ![string isEqualToString:@".."] && ![string containsString:@"/"];
 }
 
+/* The name a downloaded file is saved under, or nil when `name` cannot be used. It must be a plain file
+   name ending in ".jar" in any case (the folder only lists jars, so anything else would be installed but
+   never shown) and is saved with a lowercase ".jar" ("Foo.JAR" becomes "Foo.jar"). The folder's own
+   names are refused: the record, and anything ending in ".part", ".old" or ".disabled". */
+static NSString * _Nullable InstallFileName(id _Nullable name) {
+    if (!IsPlainFileName(name)) return nil;
+    NSString *string = name;
+    NSString *lower = string.lowercaseString;
+    if ([string isEqualToString:ModIndexFileName]) return nil;
+    for (NSString *reserved in @[kPartSuffix, kOldSuffix, kDisabledSuffix]) {
+        if ([lower hasSuffix:reserved]) return nil;
+    }
+    NSString *jarSuffix = @".jar";
+    if (![lower hasSuffix:jarSuffix] || string.length <= jarSuffix.length) return nil;
+    if (![string hasSuffix:jarSuffix]) {
+        string = [[string substringToIndex:string.length - jarSuffix.length] stringByAppendingString:jarSuffix];
+    }
+    return string;
+}
+
 static NSString * _Nullable NonEmptyString(id _Nullable value) {
     return [value isKindOfClass:NSString.class] && [(NSString *)value length] > 0 ? value : nil;
 }
@@ -150,9 +170,10 @@ static NSError *InstallError(ModInstallError code, NSString * _Nullable fileName
             *error = InstallError(ModInstallErrorDownload, nil, @"A mod version has no file to download.", nil);
             return nil;
         }
-        id fileName = file[@"filename"];
-        if (!IsPlainFileName(fileName)) {
-            *error = InstallError(ModInstallErrorFileSystem, NonEmptyString(fileName), @"The mod does not have a valid file name.", nil);
+        id publishedName = file[@"filename"];
+        NSString *fileName = InstallFileName(publishedName);
+        if (!fileName) {
+            *error = InstallError(ModInstallErrorFileSystem, NonEmptyString(publishedName), @"The mod does not have a valid file name.", nil);
             return nil;
         }
         NSString *urlString = NonEmptyString(file[@"url"]);

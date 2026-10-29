@@ -289,11 +289,18 @@ static void testIsSharedGameDir(void) {
     MT_ASSERT([ModFolder isSharedGameDir:@"." baseDir:base]);
     MT_ASSERT([ModFolder isSharedGameDir:@"./" baseDir:base]);
     MT_ASSERT([ModFolder isSharedGameDir:@"./foo/.." baseDir:base]);
-    MT_ASSERT([ModFolder isSharedGameDir:base baseDir:base]);
+    MT_ASSERT([ModFolder isSharedGameDir:@"/" baseDir:base]);
     MT_ASSERT(![ModFolder isSharedGameDir:@"./custom_gamedir/x" baseDir:base]);
     MT_ASSERT(![ModFolder isSharedGameDir:@"foo" baseDir:base]);
     MT_EQUAL([ModFolder gameDirPathForGameDir:@"./custom_gamedir/x" baseDir:base],
              [[base stringByAppendingPathComponent:@"custom_gamedir/x"] stringByStandardizingPath]);
+
+    // Like the launcher, an absolute gameDir is joined to the base folder, not used as it is.
+    MT_EQUAL([ModFolder gameDirPathForGameDir:@"/foo" baseDir:base],
+             [[base stringByAppendingPathComponent:@"foo"] stringByStandardizingPath]);
+    MT_ASSERT(![ModFolder isSharedGameDir:base baseDir:base]);
+    MT_EQUAL([ModFolder gameDirPathForGameDir:base baseDir:base],
+             [[base stringByAppendingPathComponent:base] stringByStandardizingPath]);
     RemoveDir(base);
 }
 

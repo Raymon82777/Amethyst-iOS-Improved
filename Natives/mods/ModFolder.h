@@ -49,7 +49,9 @@ typedef NS_ENUM(NSInteger, ModFolderError) {
 + (nullable NSString *)sha1OfFileAtPath:(NSString *)path;
 + (nullable NSString *)sha512OfFileAtPath:(NSString *)path;
 
-/* The standardized game folder for a profile's gameDir value (nil or empty means the base folder). */
+/* The standardized game folder for a profile's gameDir value (nil or empty means the base folder).
+   Always `baseDir` + "/" + gameDir, like the launcher: an absolute value is not honored as such, so
+   "/foo" means "<baseDir>/foo". */
 + (NSString *)gameDirPathForGameDir:(nullable NSString *)gameDir baseDir:(NSString *)baseDir;
 
 /* YES when the profile uses the base folder itself, so its mods would be shared with other profiles. */

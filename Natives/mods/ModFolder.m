@@ -218,9 +218,10 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
 #pragma mark Game folder
 
 + (NSString *)gameDirPathForGameDir:(nullable NSString *)gameDir baseDir:(NSString *)baseDir {
+    // Joined the way JavaLauncher builds the folder the game runs in ("<base>/<gameDir>", standardized),
+    // so an absolute value such as "/foo" also lands inside the base folder.
     NSString *relative = gameDir.length > 0 ? gameDir : @".";
-    NSString *path = relative.isAbsolutePath ? relative : [baseDir stringByAppendingPathComponent:relative];
-    return path.stringByStandardizingPath;
+    return [NSString stringWithFormat:@"%@/%@", baseDir, relative].stringByStandardizingPath;
 }
 
 + (BOOL)isSharedGameDir:(nullable NSString *)gameDir baseDir:(NSString *)baseDir {

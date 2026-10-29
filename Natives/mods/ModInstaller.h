@@ -44,6 +44,9 @@ typedef void (^ModDownloader)(NSURL *url, NSString *destPath, ModDownloadComplet
    file already recorded for the same project, and switches `plan.projectIdsToEnable` back on.
    A replaced mod that was disabled stays disabled. A file that already has the downloaded name is
    treated as the file being replaced, whether or not it was recorded.
+   Every file name must end in ".jar" (any case; it is saved and recorded with a lowercase ".jar") and
+   must not be one of the folder's own names (the record, "*.part", "*.old", "*.disabled"); otherwise
+   the install fails with ModInstallErrorFileSystem before anything is downloaded or touched.
    `completion` is called exactly once, on an arbitrary queue; nil error means the whole plan is in.
    If saving the record fails after the files are in place, the files stay installed and the error is
    ModInstallErrorFileSystem for the record file. */

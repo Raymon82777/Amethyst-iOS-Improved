@@ -398,6 +398,58 @@ static void testUnusableVersionsFailBeforeTouchingAnything(void) {
     RemoveDir(dir);
 }
 
+/* Names the folder would not list (or that are its own) are refused before anything is downloaded, so
+   a plan that has one installs nothing. */
+static void testNonJarAndReservedNamesAreRefused(void) {
+    NSString *dir = MakeTempDir();
+    WriteFile(dir, @"keep.jar", @"keep");
+    SeedIndex(dir, @"keep.jar", @"K");
+    NSArray *before = Listing(dir);
+    NSString *indexBefore = ReadFile(dir, ModIndexFileName);
+    ModIndex *index = [[ModIndex alloc] initWithModsDir:dir];
+    NSMutableArray *log = [NSMutableArray new];
+    NSDictionary *responses = @{UrlFor(@"a.jar"): @"alpha"};
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index downloader:FakeDownloader(responses, log, NO)];
+    NSDictionary *good = Version(@"A", @"va", @"a.jar", @"alpha");
+
+    NSArray<NSString *> *badNames = @[@"b.zip", @"b", @".jar", @"b.jar.disabled", @"b.jar.part", @"b.jar.old",
+                                      @"b.JAR.DISABLED", ModIndexFileName];
+    for (NSString *badName in badNames) {
+        NSError *error = RunInstall(installer, Plan(@[good, Version(@"B", @"vb", badName, @"beta")], @[]), @{});
+        MT_EQUAL(error.domain, ModInstallErrorDomain);
+        MT_EQUAL(@(error.code), @(ModInstallErrorFileSystem));
+        MT_EQUAL(error.userInfo[@"fileName"], badName);
+        MT_EQUAL(Listing(dir), before);
+        MT_EQUAL(ReadFile(dir, ModIndexFileName), indexBefore);
+    }
+    MT_EQUAL(index.entries.allKeys, (@[@"keep.jar"]));
+    MT_EQUAL(@(log.count), @0);
+    RemoveDir(dir);
+}
+
+/* An uppercase ".JAR" is saved as ".jar", the only kind the folder lists. */
+static void testUppercaseJarIsSavedLowercase(void) {
+    NSString *dir = MakeTempDir();
+    ModIndex *index = [[ModIndex alloc] initWithModsDir:dir];
+    NSMutableArray *log = [NSMutableArray new];
+    NSDictionary *responses = @{UrlFor(@"Upper.JAR"): @"upper"};
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index downloader:FakeDownloader(responses, log, NO)];
+
+    NSError *error = RunInstall(installer, Plan(@[Version(@"U", @"vu", @"Upper.JAR", @"upper")], @[]), @{});
+    MT_EQUAL(error, nil);
+    MT_EQUAL(log, (@[UrlFor(@"Upper.JAR")]));
+    MT_EQUAL(Listing(dir), (@[ModIndexFileName, @"Upper.jar"]));
+    MT_EQUAL(ReadFile(dir, @"Upper.jar"), @"upper");
+    MT_EQUAL(index.entries.allKeys, (@[@"Upper.jar"]));
+    MT_EQUAL(index.entries[@"Upper.jar"][@"projectId"], @"U");
+
+    NSArray<ModJar *> *jars = [[[ModFolder alloc] initWithModsDir:dir] scanJars];
+    MT_EQUAL(@(jars.count), @1);
+    MT_EQUAL(jars.firstObject.fileName, @"Upper.jar");
+    MT_ASSERT(jars.firstObject.enabled);
+    RemoveDir(dir);
+}
+
 /* Switching a dependency on fails late (its enabled name is taken), after a replacement has already
    been swapped in. Everything must be put back. */
 static void testFailureAfterSwapRestoresEverything(void) {
@@ -447,6 +499,8 @@ void ModInstallerTests(void) {
     MT_RUN(testEnablesRequestedProjects);
     MT_RUN(testSha512FallbackAndNoHash);
     MT_RUN(testUnusableVersionsFailBeforeTouchingAnything);
+    MT_RUN(testNonJarAndReservedNamesAreRefused);
+    MT_RUN(testUppercaseJarIsSavedLowercase);
     MT_RUN(testFailureAfterSwapRestoresEverything);
     MT_RUN(testUserAgent);
 }
