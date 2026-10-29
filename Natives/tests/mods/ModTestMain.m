@@ -3,11 +3,13 @@
 int gModTestFailures = 0;
 
 // One entry point per test file; later tasks append here.
+void ModIndexTests(void);
 void ModProfileInfoTests(void);
 void ModVersionSelectorTests(void);
 
 int main(void) {
     @autoreleasepool {
+        ModIndexTests();
         ModProfileInfoTests();
         ModVersionSelectorTests();
     }
