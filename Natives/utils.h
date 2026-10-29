@@ -39,6 +39,9 @@
 #define RENDERER_NAME_MOBILEGLUES "libmobileglues.dylib"
 #define RENDERER_NAME_VK_ZINK "libOSMesa.8.dylib"
 
+// Location of the bundled SDL3 library, relative to the app bundle
+#define SDL3_LIBRARY_SUBPATH @"Frameworks/libSDL3.dylib"
+
 #define SPECIALBTN_KEYBOARD -1
 #define SPECIALBTN_TOGGLECTRL -2
 #define SPECIALBTN_MOUSEPRI -3

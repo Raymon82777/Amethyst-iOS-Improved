@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <libgen.h>
+#include <mach/mach.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,9 @@ void init_loadDefaultEnv() {
 
     // Runs JVM in a separate thread
     setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
+
+    // SDL ignores SDL_SetHint below override priority when the env var is set, so this keeps SDL from starting CoreBluetooth (the app has no Bluetooth usage description)
+    setenv("SDL_JOYSTICK_HIDAPI_STEAM", "0", 1);
 }
 
 void init_loadCustomEnv() {
@@ -239,6 +243,28 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
+    NSString *sdlPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:SDL3_LIBRARY_SUBPATH];
+    if ([NSFileManager.defaultManager fileExistsAtPath:sdlPath]) {
+        margv[++margc] = [NSString stringWithFormat:@"-Ddev.isxander.sdl.library=%@", sdlPath].UTF8String;
+        // Older Controlify builds load SDL through JNA and read this instead
+        margv[++margc] = [NSString stringWithFormat:@"-Dcontrolify.debug.sdl_natives_override=%@", sdlPath].UTF8String;
+        NSLog(@"[JavaLauncher] SDL3 library: %@", sdlPath);
+        // On iOS SDL_Init fails unless SDL owns main() or SDL_SetMainReady() was called, so load SDL now and
+        // mark it ready from the main thread; the game later loads this same image by path
+        void *sdlHandle = dlopen(sdlPath.fileSystemRepresentation, RTLD_LAZY);
+        void (*setMainReady)(void) = sdlHandle ? (void (*)(void))dlsym(sdlHandle, "SDL_SetMainReady") : NULL;
+        if (setMainReady) {
+            if (NSThread.isMainThread) {
+                setMainReady();
+            } else {
+                dispatch_sync(dispatch_get_main_queue(), ^{ setMainReady(); });
+            }
+        } else {
+            NSLog(@"[JavaLauncher] Failed to preload SDL3: %s", dlerror());
+        }
+    } else {
+        NSLog(@"[JavaLauncher] SDL3 library not bundled, skipping");
+    }
     margv[++margc] = [NSString stringWithFormat:@"-Duser.dir=%@", gameDir].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Duser.home=%s", getenv("AME_HOME")].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Duser.timezone=%@", NSTimeZone.localTimeZone.name].UTF8String;

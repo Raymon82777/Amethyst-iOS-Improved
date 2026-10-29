@@ -13,6 +13,8 @@ on:
 jobs:
   build:
     name: Development build
+    # J316sAP is the upstream self-hosted runner; forks use build-macos.yml
+    if: github.repository == 'AngelAuraMC/Amethyst-iOS'
     strategy:
       matrix:
         include:

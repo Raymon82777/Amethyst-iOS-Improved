@@ -58,6 +58,12 @@ public final class Tools {
 
         final String launchClassPath = generateLaunchClassPath(versionInfo);
 
+        // Load JNA's native library from Frameworks instead of an unsigned temp copy,
+        // only when the game uses the JNA version it was built for
+        if (launchClassPath.contains("/jna-5.17.0.jar")) {
+            System.setProperty("jna.boot.library.path", DIR_BUNDLE + "/Frameworks");
+        }
+
         System.out.println("Args init finished. Now starting game");
 
         PojavClassLoader loader = (PojavClassLoader) ClassLoader.getSystemClassLoader();
@@ -268,15 +274,19 @@ public final class Tools {
 
             String[] version = libItem.name.split(":")[2].split("\\.");
             if (libItem.name.startsWith("net.java.dev.jna:jna:")) {
-                // Special handling for LabyMod 1.8.9 and Forge 1.12.2(?)
-                // we have libjnidispatch 5.13.0 in Frameworks directory
-                if (Integer.parseInt(version[0]) >= 5 && Integer.parseInt(version[1]) >= 13) continue;
-                //System.out.println("Library " + libItem.name + " has been changed to version 5.13.0");
-                
-createLibraryInfo(libItem);
-                libItem.name = "net.java.dev.jna:jna:5.13.0";
-                libItem.downloads.artifact.path = "net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
-                libItem.downloads.artifact.url = "https://libraries.minecraft.net/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
+                // We have libjnidispatch 5.17.0 in Frameworks directory, so use the matching JNA
+                int requiredVer = 0;
+                for (int j = 0; j < 3; j++) {
+                    String part = j < version.length ? version[j].replaceAll("\\D.*", "") : "";
+                    requiredVer = requiredVer << 8 | (part.isEmpty() ? 0 : Integer.parseInt(part));
+                }
+                if (requiredVer > (5 << 16 | 17 << 8)) continue;
+
+                createLibraryInfo(libItem);
+                libItem.name = "net.java.dev.jna:jna:5.17.0";
+                libItem.downloads.artifact.path = "net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar";
+                libItem.downloads.artifact.sha1 = "33d12735bef894440780fce64f9758d420c7bae2";
+                libItem.downloads.artifact.url = "https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar";
             } else if (libItem.name.startsWith("org.ow2.asm:asm-all:")) {
                 if(Integer.parseInt(version[0]) >= 5) continue;
                 //System.out.println("Library " + libItem.name + " has been changed to version 5.0.4");
