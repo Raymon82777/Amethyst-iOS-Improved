@@ -472,8 +472,10 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
 @interface ModsViewController () <UIDocumentPickerDelegate, UISearchResultsUpdating>
 @property(nonatomic, readwrite) BOOL busy;
 @property(nonatomic, readonly) BOOL isWorking; // operationRunning || reloading
-@property(nonatomic) BOOL operationRunning;
+@property(nonatomic, readwrite) BOOL operationRunning;
 @property(nonatomic) BOOL reloading;
+/* The navigation controller whose swipe back this screen turned off while an operation runs. */
+@property(nonatomic, weak, nullable) UINavigationController *popGestureLockedController;
 @property(nonatomic) BOOL reloadPending;
 @property(nonatomic) BOOL loadedOnce;
 @property(nonatomic) BOOL showFolderNotice;
@@ -550,10 +552,21 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     [self updateBusyState];
 }
 
+- (void)dealloc {
+    [self restorePopGesture];
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self updateNavigationLock];
     // Also picks up files changed in the Files app while another screen was shown.
     [self reloadFromDisk];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    // A page pushed on top may swipe back to this one; viewWillAppear locks again on the way back.
+    [self restorePopGesture];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -590,10 +603,9 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
             return [NSString stringWithFormat:localize(@"mods.error.own_folder", nil), error.localizedDescription];
         }
         profile[@"gameDir"] = newGameDir;
-        if (![profile[@"modsFolderNotice"] isEqual:@"1"]) {
-            profile[@"modsFolderNotice"] = @"1";
-            self.showFolderNotice = YES;
-        }
+        // Told on every move: one only happens while the profile is on the shared folder, e.g. again
+        // after its Game directory was set back to ".".
+        self.showFolderNotice = YES;
         [PLProfiles.current save];
         gameDir = newGameDir;
         if (self.gameDirChanged) {
@@ -656,6 +668,38 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
             ((UIButton *)cell.accessoryView).enabled = !busy;
         }
     }
+    [self updateNavigationLock];
+}
+
+/* While an operation runs, no way back to the profile editor: there a second Mods screen could be opened
+   on the same folder, whose reload would rescan it (deleting the running download's ".part") and whose
+   record would overwrite this one's. Reloads alone do not lock, so a slow network never traps the user:
+   a reload scans the folder only when it starts, a closed screen starts no further reload (see
+   reloadFromDisk), and at worst a reload still running on a closed screen saves a record that misses a
+   mod installed meanwhile from the new screen, which its next reload identifies again by hash. */
+- (void)updateNavigationLock {
+    BOOL locked = self.operationRunning;
+    if (self.navigationItem.hidesBackButton != locked) {
+        [self.navigationItem setHidesBackButton:locked animated:YES];
+    }
+    UINavigationController *navigationController = self.navigationController;
+    if (!locked || navigationController.topViewController != self) {
+        // Pages pushed on top keep their swipe back: it only returns here.
+        [self restorePopGesture];
+        return;
+    }
+    UIGestureRecognizer *popGesture = navigationController.interactivePopGestureRecognizer;
+    if (!self.popGestureLockedController && popGesture.enabled) {
+        popGesture.enabled = NO;
+        self.popGestureLockedController = navigationController;
+    }
+}
+
+/* Turns swipe back on again, if this screen turned it off. */
+- (void)restorePopGesture {
+    UINavigationController *navigationController = self.popGestureLockedController;
+    navigationController.interactivePopGestureRecognizer.enabled = YES;
+    self.popGestureLockedController = nil;
 }
 
 /* The state machine runs on the raw flags; `busy` is only their published copy (recomputed by
@@ -714,7 +758,9 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
         dispatch_async(dispatch_get_main_queue(), ^{
             self.reloading = NO;
             self.loadedOnce = YES;
-            if (self.reloadPending) {
+            // Not once the screen was closed: another Mods screen may be using the folder by now, and
+            // a rescan would delete its download in progress.
+            if (self.reloadPending && self.navigationController) {
                 // Asked for again while this one ran: start it right away, staying busy throughout.
                 [self reloadFromDisk];
                 [self publishResult:result];
@@ -1105,14 +1151,9 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     if (self.busy || !self.folder) {
         return;
     }
-    NSMutableArray<UTType *> *types = [NSMutableArray new];
-    for (NSString *identifier in @[@"public.java-archive", @"com.sun.java-archive"]) {
-        UTType *type = [UTType typeWithIdentifier:identifier];
-        if (type) [types addObject:type];
-    }
-    if (types.count == 0) {
-        [types addObject:UTTypeData];
-    }
+    // The type the system knows for ".jar" files; any file if it knows none (importJarAtURL: checks the name).
+    UTType *jarType = [UTType typeWithFilenameExtension:@"jar"];
+    NSArray<UTType *> *types = @[jarType ?: UTTypeData];
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;

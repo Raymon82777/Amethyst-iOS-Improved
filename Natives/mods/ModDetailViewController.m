@@ -10,6 +10,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 static void *kDetailBusyContext = &kDetailBusyContext;
+static void *kDetailOperationContext = &kDetailOperationContext;
 static const CGFloat kHeroIconSize = 56;
 
 /* `value` when it is a non-empty string. */
@@ -228,11 +229,29 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     _sections = @[];
     _loading = YES;
     [mods addObserver:self forKeyPath:@"busy" options:0 context:kDetailBusyContext];
+    [mods addObserver:self forKeyPath:@"operationRunning" options:0 context:kDetailOperationContext];
     return self;
 }
 
 - (void)dealloc {
     [_mods removeObserver:self forKeyPath:@"busy" context:kDetailBusyContext];
+    [_mods removeObserver:self forKeyPath:@"operationRunning" context:kDetailOperationContext];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self updateBackButton];
+}
+
+/* Pushed on the Mods screen, this page's back button (and its long-press menu) is a way back past that
+   screen to the profile editor, so it is hidden while the Mods screen runs an operation, as that screen
+   hides its own. Swiping back still works: it only returns to the Mods screen. Inside Browse nothing
+   is hidden: going back there never leaves the Mods screen. */
+- (void)updateBackButton {
+    BOOL locked = self.mods.operationRunning && [self.navigationController.viewControllers containsObject:self.mods];
+    if (self.navigationItem.hidesBackButton != locked) {
+        [self.navigationItem setHidesBackButton:locked animated:YES];
+    }
 }
 
 - (void)viewDidLoad {
@@ -247,14 +266,19 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
 
 - (void)observeValueForKeyPath:(nullable NSString *)keyPath ofObject:(nullable id)object
                         change:(nullable NSDictionary<NSKeyValueChangeKey, id> *)change context:(nullable void *)context {
-    if (context != kDetailBusyContext) {
+    if (context != kDetailBusyContext && context != kDetailOperationContext) {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
         return;
     }
+    BOOL operationChanged = context == kDetailOperationContext;
     __weak ModDetailViewController *weakSelf = self;
     void (^update)(void) = ^{
         ModDetailViewController *strongSelf = weakSelf;
         if (!strongSelf || !strongSelf.isViewLoaded) return;
+        if (operationChanged) {
+            [strongSelf updateBackButton];
+            return;
+        }
         [strongSelf refreshInstalledState];
         [strongSelf reloadRows];
     };

@@ -12,8 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
    "Switch all" banner instead. Gives a modded profile that still uses the shared game folder its own
    folder the first time it opens.
 
-   Threading: every file and network job runs on one private serial queue; results are published on the
-   main queue. Everything below is meant to be used from the main queue. */
+   Threading: the screen's own jobs (reloads and its operations) run on a private serial queue, but an
+   operation may run its blocking work on any queue (the detail page's installs use a global queue).
+   Jobs are kept apart by `busy`, not by the queue: only one operation or reload runs at a time.
+   Results are published on the main queue. Everything below is meant to be used from the main queue. */
 @interface ModsViewController : UITableViewController
 
 - (instancetype)initWithProfileName:(NSString *)profileName;
@@ -31,6 +33,11 @@ NS_ASSUME_NONNULL_BEGIN
 /* YES while an operation or a reload runs. Key-value observable. Never touch `index` or `folder` from
    another job while this is YES unless you are the running operation. */
 @property(nonatomic, readonly) BOOL busy;
+/* YES while an operation runs (a reload alone does not count). Key-value observable. While it is YES
+   this screen hides its back button and turns off swipe back, so it cannot be left for the profile
+   editor (from where a second Mods screen could be opened on the same folder). Pages pushed on top of
+   it should not offer a way back past it either. */
+@property(nonatomic, readonly) BOOL operationRunning;
 
 /* Runs `operation` on the main queue unless the screen is busy (then nothing happens). While it runs the
    screen is busy: spinner shown, switches, swipe actions and bar buttons disabled. The operation does its
