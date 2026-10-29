@@ -182,8 +182,10 @@ static void testImportAsFileName(void) {
     MT_EQUAL(ReadFile(dir, @"sodium.jar"), @"data");
 
     // A name can never escape the mods folder.
-    MT_EQUAL([folder importJarFromURL:source asFileName:@"../escape.jar" replaceExisting:NO error:&error], @"escape.jar");
-    MT_ASSERT(Exists(dir, @"escape.jar"));
+    error = nil;
+    MT_EQUAL([folder importJarFromURL:source asFileName:@"../escape.jar" replaceExisting:NO error:&error], nil);
+    MT_ASSERT(error != nil);
+    MT_ASSERT(!Exists(dir, @"escape.jar"));
     MT_ASSERT(!Exists([dir stringByDeletingLastPathComponent], @"escape.jar"));
 
     // A missing source file fails and leaves no .part behind.
@@ -193,6 +195,31 @@ static void testImportAsFileName(void) {
     MT_ASSERT(error != nil);
     MT_ASSERT(!Exists(dir, @"missing.jar.part"));
     RemoveDir(dir);
+    RemoveDir(sourceDir);
+}
+
+static void testImportRejectsPathSpecialNames(void) {
+    NSString *root = MakeTempDir();
+    NSString *dir = [root stringByAppendingPathComponent:@"mods"];
+    NSString *sourceDir = MakeTempDir();
+    WriteFile(sourceDir, @"a.jar", @"new");
+    NSURL *source = [NSURL fileURLWithPath:[sourceDir stringByAppendingPathComponent:@"a.jar"]];
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir];
+    WriteFile(dir, @"keep.jar", @"keep");
+    WriteFile(root, @"options.txt", @"fov:90");
+
+    NSArray<NSString *> *badNames = @[@"..", @".", @"/", @"", @"a/b.jar", @"../mods"];
+    for (NSString *bad in badNames) {
+        for (NSNumber *replace in @[@NO, @YES]) {
+            NSError *error = nil;
+            MT_EQUAL([folder importJarFromURL:source asFileName:bad replaceExisting:replace.boolValue error:&error], nil);
+            MT_ASSERT(error != nil);
+        }
+    }
+    MT_ASSERT(Exists(root, @"mods"));
+    MT_EQUAL(ReadFile(dir, @"keep.jar"), @"keep");
+    MT_EQUAL(ReadFile(root, @"options.txt"), @"fov:90");
+    RemoveDir(root);
     RemoveDir(sourceDir);
 }
 
@@ -282,6 +309,10 @@ static void testSafeFolderNameStripsPathCharacters(void) {
     MT_EQUAL([ModFolder safeFolderName:@""], @"Profile");
     MT_EQUAL([ModFolder safeFolderName:@"..."], @"Profile");
     MT_EQUAL([ModFolder safeFolderName:@"  "], @"Profile");
+    MT_EQUAL([ModFolder safeFolderName:@". .."], @"Profile");
+    MT_EQUAL([ModFolder safeFolderName:@". ."], @"Profile");
+    MT_EQUAL([ModFolder safeFolderName:@" . .. Fab "], @"Fab");
+    MT_EQUAL([ModFolder safeFolderName:@"Fab.."], @"Fab..");
 }
 
 static void testMigrateCreatesFolderAndCopiesOptions(void) {
@@ -316,6 +347,17 @@ static void testMigrateSuffixesExistingFolder(void) {
     RemoveDir(base);
 }
 
+static void testMigrateDottyNameStaysInsideCustomGameDir(void) {
+    NSString *base = MakeTempDir();
+    NSError *error = nil;
+    NSString *gameDir = [ModFolder migrateProfileNamed:@". .." baseDir:base error:&error];
+    MT_EQUAL(gameDir, @"./custom_gamedir/Profile");
+    MT_ASSERT(Exists(base, @"custom_gamedir/Profile/mods"));
+    MT_ASSERT(!Exists(base, @"mods"));
+    MT_ASSERT(![ModFolder isSharedGameDir:gameDir baseDir:base]);
+    RemoveDir(base);
+}
+
 static void testMigrateDoesNotOverwriteOptions(void) {
     NSString *base = MakeTempDir();
     WriteFile(base, @"servers.dat", @"keep");
@@ -341,6 +383,7 @@ void ModFolderTests(void) {
     MT_RUN(testImportClash);
     MT_RUN(testImportClashCountsDisabledTwin);
     MT_RUN(testImportAsFileName);
+    MT_RUN(testImportRejectsPathSpecialNames);
     MT_RUN(testImportKeepBothName);
     MT_RUN(testSha1KnownValue);
     MT_RUN(testHashSpansMultipleChunks);
@@ -348,5 +391,6 @@ void ModFolderTests(void) {
     MT_RUN(testSafeFolderNameStripsPathCharacters);
     MT_RUN(testMigrateCreatesFolderAndCopiesOptions);
     MT_RUN(testMigrateSuffixesExistingFolder);
+    MT_RUN(testMigrateDottyNameStaysInsideCustomGameDir);
     MT_RUN(testMigrateDoesNotOverwriteOptions);
 }

@@ -132,12 +132,13 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
 
 - (nullable NSString *)importJarFromURL:(NSURL *)url asFileName:(nullable NSString *)fileName replaceExisting:(BOOL)replace error:(NSError **)error {
     NSFileManager *fm = NSFileManager.defaultManager;
-    // Only the last component, so a name can never point outside the mods folder.
-    NSString *name = (fileName ?: url.lastPathComponent).lastPathComponent;
-    if (name.length == 0) {
+    // A name must be a single plain file name: "." and ".." would resolve to a folder, and a "/" would
+    // point outside the mods folder.
+    NSString *name = fileName ?: url.lastPathComponent;
+    if (name.length == 0 || [name isEqualToString:@"."] || [name isEqualToString:@".."] || [name containsString:@"/"]) {
         if (error) {
             *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteInvalidFileNameError
-                                     userInfo:@{NSLocalizedDescriptionKey: @"The mod has no file name."}];
+                                     userInfo:@{NSLocalizedDescriptionKey: @"The mod does not have a valid file name."}];
         }
         return nil;
     }
@@ -154,6 +155,7 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
     NSString *partPath = [targetPath stringByAppendingString:kPartSuffix];
     [fm removeItemAtPath:partPath error:nil];
     if (![fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:partPath] error:error]) {
+        [fm removeItemAtPath:partPath error:nil];
         return nil;
     }
     if (clash) {
@@ -238,12 +240,18 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
         [name appendFormat:@"%C", c];
     }
 
-    NSString *result = [name stringByTrimmingCharactersInSet:whitespace];
-    while ([result hasPrefix:@"."]) {
-        result = [result substringFromIndex:1];
+    // Leading whitespace and dots go together, so ". .." cannot leave a "." or ".." behind.
+    NSMutableCharacterSet *leading = [whitespace mutableCopy];
+    [leading addCharactersInString:@"."];
+    NSUInteger start = 0;
+    while (start < name.length && [leading characterIsMember:[name characterAtIndex:start]]) {
+        start++;
     }
-    result = [result stringByTrimmingCharactersInSet:whitespace];
-    return result.length > 0 ? result : @"Profile";
+    NSString *result = [[name substringFromIndex:start] stringByTrimmingCharactersInSet:whitespace];
+    if (result.length == 0 || [result isEqualToString:@"."] || [result isEqualToString:@".."]) {
+        return @"Profile";
+    }
+    return result;
 }
 
 + (nullable NSString *)migrateProfileNamed:(NSString *)profileName baseDir:(NSString *)baseDir error:(NSError **)error {
