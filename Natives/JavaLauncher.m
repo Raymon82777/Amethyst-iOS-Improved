@@ -246,6 +246,8 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *sdlPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:SDL3_LIBRARY_SUBPATH];
     if ([NSFileManager.defaultManager fileExistsAtPath:sdlPath]) {
         margv[++margc] = [NSString stringWithFormat:@"-Ddev.isxander.sdl.library=%@", sdlPath].UTF8String;
+        // Older Controlify builds load SDL through JNA and read this instead
+        margv[++margc] = [NSString stringWithFormat:@"-Dcontrolify.debug.sdl_natives_override=%@", sdlPath].UTF8String;
         NSLog(@"[JavaLauncher] SDL3 library: %@", sdlPath);
     } else {
         NSLog(@"[JavaLauncher] SDL3 library not bundled, skipping");

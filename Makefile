@@ -348,6 +348,19 @@ dep_sdl:
 	cp -L $(WORKINGDIR)/sdl/libSDL3.dylib $(WORKINGDIR)/libSDL3.dylib
 	echo '[Amethyst v$(VERSION)] dep_sdl - end'
 
+# Bundle JNA's native library so the game doesn't have to load an unsigned copy from a temp file,
+# which fails on devices where the dyld library validation bypass is unavailable
+dep_jna:
+	echo '[Amethyst v$(VERSION)] dep_jna - start'
+	mkdir -p $(WORKINGDIR)/jna
+	cd $(WORKINGDIR)/jna && curl -fSLO https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+	cd $(WORKINGDIR)/jna && echo '33d12735bef894440780fce64f9758d420c7bae2  jna-5.17.0.jar' | shasum -c -
+	unzip -o -j $(WORKINGDIR)/jna/jna-5.17.0.jar com/sun/jna/darwin-aarch64/libjnidispatch.jnilib -d $(WORKINGDIR)/jna
+	install_name_tool -change /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation /System/Library/Frameworks/Foundation.framework/Foundation $(WORKINGDIR)/jna/libjnidispatch.jnilib
+	vtool -arch arm64 -set-build-version 2 14.0 16.0 -replace -output $(WORKINGDIR)/libjnidispatch.dylib $(WORKINGDIR)/jna/libjnidispatch.jnilib
+	ldid -S $(WORKINGDIR)/libjnidispatch.dylib
+	echo '[Amethyst v$(VERSION)] dep_jna - end'
+
 assets:
 	echo '[Amethyst v$(VERSION)] assets - start'
 	if [ '$(IOS)' = '0' ] && [ '$(DETECTPLAT)' = 'Darwin' ]; then \
@@ -363,7 +376,7 @@ assets:
 	fi
 	echo '[Amethyst v$(VERSION)] assets - end'
 
-payload: native dep_mg dep_sdl java jre assets
+payload: native dep_mg dep_sdl dep_jna java jre assets
 	echo '[Amethyst v$(VERSION)] payload - start'
 	$(call METHOD_DIRCHECK,$(WORKINGDIR)/AngelAuraAmethyst.app/libs)
 	$(call METHOD_DIRCHECK,$(WORKINGDIR)/AngelAuraAmethyst.app/libs_caciocavallo)
@@ -459,4 +472,4 @@ clean:
 
 		
 
-.PHONY: all clean check native java jre package dsym deploy help dep_sdl
+.PHONY: all clean check native java jre package dsym deploy help dep_sdl dep_jna
