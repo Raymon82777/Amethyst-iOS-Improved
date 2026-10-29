@@ -139,6 +139,8 @@ add_executable(AngelAuraAmethyst
   mods/ModDependencyResolver.m
   mods/ModInstaller.m
   mods/ModrinthModsAPI.m
+  mods/ModJarMetadata.m
+  mods/ModsViewController.m
 
   input/ControllerInput.m
   input/GyroInput.m
