@@ -1,4 +1,6 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "ModBrowseViewController.h"
+#import "ModDetailViewController.h"
 #import "ModJarMetadata.h"
 #import "ModVersionSelector.h"
 #import "ModsViewController.h"
@@ -223,6 +225,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 @property(nonatomic) NSDictionary<NSString *, ModsRow *> *rowsByFileName;
 
 @property(nonatomic, nullable) UISearchController *searchController;
+@property(nonatomic, nullable) UIBarButtonItem *addItem;
 @property(nonatomic, nullable) UIBarButtonItem *importItem;
 @property(nonatomic, nullable) UIActivityIndicatorView *spinner;
 @end
@@ -264,9 +267,13 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     self.importItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"folder.badge.plus"]
         style:UIBarButtonItemStylePlain target:self action:@selector(actionImport)];
     self.importItem.accessibilityLabel = localize(@"mods.action.import", nil);
+    self.addItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+        target:self action:@selector(actionAdd)];
+    self.addItem.accessibilityLabel = localize(@"mods.action.add", nil);
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItems = @[
+        self.addItem,
         self.importItem,
         [[UIBarButtonItem alloc] initWithCustomView:self.spinner]
     ];
@@ -361,6 +368,7 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     if (self.busy != busy) {
         self.busy = busy;
     }
+    self.addItem.enabled = !busy;
     self.importItem.enabled = !busy;
     if (busy) {
         [self.spinner startAnimating];
@@ -588,6 +596,32 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     }];
 }
 
+#pragma mark Browse and detail
+
+- (void)actionAdd {
+    if (self.busy || !self.folder) {
+        return;
+    }
+    ModBrowseViewController *browse = [[ModBrowseViewController alloc] initWithModsController:self];
+    UINavigationController *navigationController = [[UINavigationController alloc] initWithRootViewController:browse];
+    [self presentViewController:navigationController animated:YES completion:nil];
+}
+
+/* The Modrinth project a row's jar came from, or nil for mods added by hand. */
+- (nullable NSString *)projectIdOfRow:(ModsRow *)row {
+    return StringOrNil(row.entry[@"projectId"]);
+}
+
+/* The mod's detail page, which marks the installed version and can switch to another one. */
+- (void)showDetailOfRow:(ModsRow *)row {
+    NSString *projectId = [self projectIdOfRow:row];
+    if (!projectId || !self.folder) {
+        return;
+    }
+    ModDetailViewController *detail = [[ModDetailViewController alloc] initWithModsController:self projectId:projectId hit:nil];
+    [self.navigationController pushViewController:detail animated:YES];
+}
+
 #pragma mark Import
 
 - (void)actionImport {
@@ -730,6 +764,8 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
     ModsRow *row = self.visibleRows[indexPath.row];
     cell.textLabel.text = row.title;
     cell.detailTextLabel.text = row.subtitle;
+    // Mods from Modrinth open their detail page.
+    cell.selectionStyle = [self projectIdOfRow:row] ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     UIImage *placeholder = [[UIImage imageNamed:@"DefaultProfile"] _imageWithSize:CGSizeMake(40, 40)];
     if (row.iconURL) {
         [cell.imageView setImageWithURL:row.iconURL placeholderImage:placeholder];
@@ -749,7 +785,14 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
 #pragma mark UITableViewDelegate
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
-    return NO;
+    return indexPath.row < (NSInteger)self.visibleRows.count && [self projectIdOfRow:self.visibleRows[indexPath.row]] != nil;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row < (NSInteger)self.visibleRows.count) {
+        [self showDetailOfRow:self.visibleRows[indexPath.row]];
+    }
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -773,7 +816,18 @@ static NSArray<ModsRow *> *LoadRows(ModFolder *folder, ModIndex *modIndex, Modri
                 [weakSelf deleteRow:row];
             } cancelled:nil];
         }];
-    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[delete]];
+    NSMutableArray<UIContextualAction *> *actions = [NSMutableArray arrayWithObject:delete];
+    if ([self projectIdOfRow:row]) {
+        UIContextualAction *changeVersion = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+            title:localize(@"mods.action.change_version", nil)
+            handler:^(UIContextualAction *action, UIView *sourceView, void (^completionHandler)(BOOL)) {
+                completionHandler(YES);
+                [weakSelf showDetailOfRow:row];
+            }];
+        changeVersion.backgroundColor = UIColor.systemBlueColor;
+        [actions addObject:changeVersion];
+    }
+    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:actions];
     configuration.performsFirstActionWithFullSwipe = YES;
     return configuration;
 }
