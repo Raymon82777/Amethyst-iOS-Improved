@@ -4,10 +4,12 @@ int gModTestFailures = 0;
 
 // One entry point per test file; later tasks append here.
 void ModProfileInfoTests(void);
+void ModVersionSelectorTests(void);
 
 int main(void) {
     @autoreleasepool {
         ModProfileInfoTests();
+        ModVersionSelectorTests();
     }
     if (gModTestFailures > 0) {
         fprintf(stderr, "%d assertion(s) failed\n", gModTestFailures);

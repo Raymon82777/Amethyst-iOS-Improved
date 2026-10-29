@@ -133,6 +133,7 @@ add_executable(AngelAuraAmethyst
   installer/modpack/ModrinthAPI.m
 
   mods/ModProfileInfo.m
+  mods/ModVersionSelector.m
 
   input/ControllerInput.m
   input/GyroInput.m
