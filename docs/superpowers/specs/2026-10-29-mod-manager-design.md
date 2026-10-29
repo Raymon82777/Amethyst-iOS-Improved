@@ -87,7 +87,7 @@ instance root):
 2. Create the folder and its `mods/` subfolder.
 3. Copy `options.txt` from the instance root into the new folder if the new
    folder has none, so controls and video settings carry over. *(My call.)*
-4. Show a one-time alert: the profile now has its own folder; worlds, resource
+4. Show an alert each time this happens: the profile now has its own folder; worlds, resource
    packs and mods in the shared folder stay where they are. *(My call.)*
 
 Nothing in the shared folder is moved or deleted. Profiles that already have a
@@ -346,7 +346,7 @@ them all.
 ## Calls I made (not discussed with the user)
 
 Marked *(My call.)* above: copying `options.txt` on folder migration; the
-one-time alert; alphabetical sort; warn-not-block on incompatible mods; the iOS
+the folder-move alert; alphabetical sort; warn-not-block on incompatible mods; the iOS
 warning list format; User-Agent; the single JSON record and its
 `unknownHashes` cache; reading names from jar metadata; the two-request update
 check that keeps release users on releases; Mods works from the saved profile
