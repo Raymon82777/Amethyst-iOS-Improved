@@ -249,6 +249,19 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         // Older Controlify builds load SDL through JNA and read this instead
         margv[++margc] = [NSString stringWithFormat:@"-Dcontrolify.debug.sdl_natives_override=%@", sdlPath].UTF8String;
         NSLog(@"[JavaLauncher] SDL3 library: %@", sdlPath);
+        // On iOS SDL_Init fails unless SDL owns main() or SDL_SetMainReady() was called, so load SDL now and
+        // mark it ready from the main thread; the game later loads this same image by path
+        void *sdlHandle = dlopen(sdlPath.fileSystemRepresentation, RTLD_LAZY);
+        void (*setMainReady)(void) = sdlHandle ? (void (*)(void))dlsym(sdlHandle, "SDL_SetMainReady") : NULL;
+        if (setMainReady) {
+            if (NSThread.isMainThread) {
+                setMainReady();
+            } else {
+                dispatch_sync(dispatch_get_main_queue(), ^{ setMainReady(); });
+            }
+        } else {
+            NSLog(@"[JavaLauncher] Failed to preload SDL3: %s", dlerror());
+        }
     } else {
         NSLog(@"[JavaLauncher] SDL3 library not bundled, skipping");
     }
