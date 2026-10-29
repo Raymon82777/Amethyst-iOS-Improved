@@ -140,6 +140,7 @@ add_executable(AngelAuraAmethyst
   mods/ModInstaller.m
   mods/ModrinthModsAPI.m
   mods/ModJarMetadata.m
+  mods/ModInstallFlow.m
   mods/ModsViewController.m
   mods/ModBrowseViewController.m
   mods/ModDetailViewController.m

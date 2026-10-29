@@ -1,6 +1,6 @@
 #import "ModDependencyResolver.h"
 #import "ModDetailViewController.h"
-#import "ModInstaller.h"
+#import "ModInstallFlow.h"
 #import "ModVersionSelector.h"
 #import "UIKit+AFNetworking.h"
 #import "UIKit+hook.h"
@@ -141,152 +141,6 @@ static NSArray<NSString *> *DependencyProjectIds(NSDictionary *version, NSString
     return ids;
 }
 
-#pragma mark - Errors
-
-static NSError *DisplayError(NSString *message, NSError * _Nullable underlying) {
-    NSMutableDictionary *userInfo = [NSMutableDictionary dictionaryWithObject:message forKey:NSLocalizedDescriptionKey];
-    if (underlying) userInfo[NSUnderlyingErrorKey] = underlying;
-    return [NSError errorWithDomain:underlying.domain ?: ModInstallErrorDomain code:underlying.code userInfo:userInfo];
-}
-
-static BOOL IsMissingDependency(NSError * _Nullable error) {
-    return [error.domain isEqualToString:ModResolveErrorDomain] && error.code == ModResolveErrorMissingDependency;
-}
-
-/* Titles of Modrinth projects by id (one request; blocking). Projects it cannot find are left out. */
-static NSDictionary<NSString *, NSString *> *ProjectTitles(NSArray<NSString *> *projectIds, ModrinthModsAPI *api) {
-    if (projectIds.count == 0) return @{};
-    NSDictionary<NSString *, NSDictionary *> *projects = [api projectsWithIds:projectIds];
-    NSMutableDictionary<NSString *, NSString *> *titles = [NSMutableDictionary new];
-    for (NSString *projectId in projects) {
-        NSDictionary *project = projects[projectId];
-        NSString *title = [project isKindOfClass:NSDictionary.class] ? StringOrNil(project[@"title"]) : nil;
-        if (title) titles[projectId] = title;
-    }
-    return titles;
-}
-
-/* What to tell the user when no plan could be made (blocking: may look up the missing mod's title). */
-static NSString *ResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api,
-                                     NSDictionary<NSString *, NSString *> *knownTitles, NSString *profileName) {
-    if (IsMissingDependency(error)) {
-        NSString *projectId = StringOrNil(error.userInfo[@"projectId"]) ?: @"?";
-        NSString *title = knownTitles[projectId] ?: ProjectTitles(@[projectId], api)[projectId] ?: projectId;
-        return [NSString stringWithFormat:localize(@"mods.error.missing_dependency", nil), title, profileName];
-    }
-    return error.localizedDescription ?: localize(@"Error", nil);
-}
-
-#pragma mark - Fetch cache
-
-/* Remembers Modrinth's answers while the page is open, so working the plan out again when installing
-   costs no extra requests. Thread-safe. */
-@interface ModFetchCache : NSObject
-@property(nonatomic) NSMutableDictionary<NSString *, NSArray<NSDictionary *> *> *projectVersions;
-@property(nonatomic) NSMutableDictionary<NSString *, NSDictionary *> *versions;
-@end
-
-@implementation ModFetchCache
-
-- (instancetype)init {
-    self = [super init];
-    _projectVersions = [NSMutableDictionary new];
-    _versions = [NSMutableDictionary new];
-    return self;
-}
-
-- (void)setVersions:(NSArray<NSDictionary *> *)versions ofProject:(NSString *)projectId {
-    @synchronized (self) {
-        self.projectVersions[projectId] = versions;
-    }
-}
-
-- (ModFetchProjectVersions)projectVersionsFetcherWithAPI:(ModrinthModsAPI *)api loaders:(NSArray<NSString *> *)loaders gameVersion:(NSString *)mc {
-    return ^NSArray<NSDictionary *> * _Nullable(NSString *projectId) {
-        NSArray<NSDictionary *> *cached;
-        @synchronized (self) {
-            cached = self.projectVersions[projectId];
-        }
-        if (cached) return cached;
-        NSArray<NSDictionary *> *fetched = [api versionsOfProject:projectId loaders:loaders gameVersion:mc];
-        if (fetched) {
-            [self setVersions:fetched ofProject:projectId];
-        }
-        return fetched;
-    };
-}
-
-- (ModFetchVersion)versionFetcherWithAPI:(ModrinthModsAPI *)api {
-    return ^NSDictionary * _Nullable(NSString *versionId) {
-        NSDictionary *cached;
-        @synchronized (self) {
-            cached = self.versions[versionId];
-        }
-        if (cached) return cached;
-        NSDictionary *fetched = [api versionWithId:versionId];
-        if (fetched) {
-            @synchronized (self) {
-                self.versions[versionId] = fetched;
-            }
-        }
-        return fetched;
-    };
-}
-
-@end
-
-#pragma mark - Installed state
-
-/* Which Modrinth projects the profile has, from the record plus the files' enabled state. */
-@interface ModInstalledState : NSObject
-@property(nonatomic, copy) NSDictionary<NSString *, NSNumber *> *enabledByProject; // what the resolver takes
-@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *versionIdByProject;
-@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *titleByProject;
-@end
-
-@implementation ModInstalledState
-
-- (BOOL)isEqual:(nullable id)other {
-    if (self == other) return YES;
-    if (![other isKindOfClass:ModInstalledState.class]) return NO;
-    ModInstalledState *state = other;
-    return [self.enabledByProject isEqualToDictionary:state.enabledByProject]
-        && [self.versionIdByProject isEqualToDictionary:state.versionIdByProject]
-        && [self.titleByProject isEqualToDictionary:state.titleByProject];
-}
-
-- (NSUInteger)hash {
-    return self.enabledByProject.hash;
-}
-
-@end
-
-/* `enabledByFileName` maps the jars on disk (names without ".disabled") to @(enabled); record entries
-   without a file are ignored. Must only run while nothing else uses `index`. */
-static ModInstalledState *InstalledStateOf(ModIndex *index, NSDictionary<NSString *, NSNumber *> *enabledByFileName) {
-    NSMutableDictionary<NSString *, NSNumber *> *enabled = [NSMutableDictionary new];
-    NSMutableDictionary<NSString *, NSString *> *versionIds = [NSMutableDictionary new];
-    NSMutableDictionary<NSString *, NSString *> *titles = [NSMutableDictionary new];
-    // Sorted, so two files of one project always give the same answer.
-    for (NSString *fileName in [index.entries.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        NSNumber *isEnabled = enabledByFileName[fileName];
-        NSString *projectId = StringOrNil(index.entries[fileName][@"projectId"]);
-        if (!isEnabled || !projectId) continue;
-        if (enabled[projectId].boolValue && !isEnabled.boolValue) continue; // an enabled copy wins
-        enabled[projectId] = isEnabled;
-        NSDictionary *entry = index.entries[fileName];
-        NSString *versionId = StringOrNil(entry[@"versionId"]);
-        NSString *title = StringOrNil(entry[@"title"]);
-        if (versionId) versionIds[projectId] = versionId; else [versionIds removeObjectForKey:projectId];
-        if (title) titles[projectId] = title;
-    }
-    ModInstalledState *state = [ModInstalledState new];
-    state.enabledByProject = enabled;
-    state.versionIdByProject = versionIds;
-    state.titleByProject = titles;
-    return state;
-}
-
 #pragma mark - Rows
 
 typedef NS_ENUM(NSInteger, ModDetailRowKind) {
@@ -339,7 +193,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
 @property(nonatomic, copy) NSString *projectId;
 /* title, description, author, downloads, imageUrl, slug (from the search hit or the loaded project). */
 @property(nonatomic, copy) NSDictionary *projectInfo;
-@property(nonatomic) ModFetchCache *fetchCache;
+@property(nonatomic) ModInstallFlow *flow; // resolving and installing for this profile, with this page's fetch cache
 
 @property(nonatomic) BOOL loading;
 @property(nonatomic, copy, nullable) NSString *loadError;
@@ -367,7 +221,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     _mods = mods;
     _projectId = [projectId copy];
     _projectInfo = [hit copy] ?: @{};
-    _fetchCache = [ModFetchCache new];
+    _flow = [[ModInstallFlow alloc] initWithLoaders:mods.info.acceptedLoaders gameVersion:mods.info.minecraftVersion ?: @""
+        profileName:mods.info.displayName fetchCache:[ModFetchCache new]];
     _compatibleVersions = @[];
     _titles = [NSMutableDictionary new];
     _sections = @[];
@@ -460,7 +315,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
             if ([project isKindOfClass:NSDictionary.class]) {
                 [strongSelf takeProject:project];
             }
-            [strongSelf.fetchCache setVersions:versions ofProject:projectId];
+            [strongSelf.flow.fetchCache setVersions:versions ofProject:projectId];
             strongSelf.compatibleVersions = [ModVersionSelector compatibleVersionsNewestFirst:versions loaders:loaders gameVersion:mc];
             strongSelf.bestVersion = [ModVersionSelector bestVersionIn:versions loaders:loaders gameVersion:mc];
             strongSelf.title = [strongSelf projectTitle];
@@ -504,7 +359,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
             enabledByFileName[fileName] = @NO;
         }
     }
-    ModInstalledState *state = InstalledStateOf(modIndex, enabledByFileName);
+    ModInstalledState *state = [ModInstalledState stateOfIndex:modIndex enabledByFileName:enabledByFileName];
     if (![state isEqual:self.installed]) {
         self.installed = state;
         if (self.isViewLoaded) self.title = [self projectTitle];
@@ -522,16 +377,11 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     self.dryRunInstalled = state;
     NSUInteger generation = ++self.dryRunGeneration;
 
-    NSArray<NSString *> *loaders = self.mods.info.acceptedLoaders;
-    NSString *mc = self.mods.info.minecraftVersion ?: @"";
-    ModFetchCache *cache = self.fetchCache;
+    ModInstallFlow *flow = self.flow;
     __weak ModDetailViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ModrinthModsAPI *api = [ModrinthModsAPI new];
-        ModDependencyResolver *resolver = [[ModDependencyResolver alloc] initWithLoaders:loaders gameVersion:mc
-            installedProjects:state.enabledByProject
-            fetchProjectVersions:[cache projectVersionsFetcherWithAPI:api loaders:loaders gameVersion:mc]
-            fetchVersion:[cache versionFetcherWithAPI:api]];
+        ModDependencyResolver *resolver = [flow resolverWithInstalledProjects:state.enabledByProject api:api];
         NSError *error;
         ModInstallPlan *plan = [resolver planForVersion:version error:&error];
 
@@ -545,11 +395,11 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
             [ids addObjectsFromArray:plan.incompatibleInstalledProjectIds];
             [ids addObjectsFromArray:plan.optionalProjectIds];
             [ids addObjectsFromArray:DependencyProjectIds(version, @"required")];
-        } else if (IsMissingDependency(error)) {
+        } else if (ModIsMissingDependency(error)) {
             NSString *missing = StringOrNil(error.userInfo[@"projectId"]);
             if (missing) [ids addObject:missing];
         }
-        NSDictionary<NSString *, NSString *> *titles = ProjectTitles(ids, api);
+        NSDictionary<NSString *, NSString *> *titles = ModProjectTitles(ids, api);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             ModDetailViewController *strongSelf = weakSelf;
@@ -597,7 +447,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     if (!self.bestVersion) {
         return rows;
     }
-    if (IsMissingDependency(self.dryRunError)) {
+    if (ModIsMissingDependency(self.dryRunError)) {
         NSString *missing = StringOrNil(self.dryRunError.userInfo[@"projectId"]) ?: @"?";
         add([NSString stringWithFormat:localize(@"mods.error.missing_dependency", nil),
             [self titleOfProject:missing], self.mods.info.displayName], UIColor.systemRedColor);
@@ -756,23 +606,17 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     self.preparing = YES;
     [self reloadRows];
 
-    NSArray<NSString *> *loaders = self.mods.info.acceptedLoaders;
-    NSString *mc = self.mods.info.minecraftVersion ?: @"";
-    NSString *profileName = self.mods.info.displayName;
-    ModFetchCache *cache = self.fetchCache;
+    ModInstallFlow *flow = self.flow;
     NSDictionary<NSString *, NSString *> *knownTitles = [self.titles copy];
     __weak ModDetailViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ModrinthModsAPI *api = [ModrinthModsAPI new];
-        ModDependencyResolver *resolver = [[ModDependencyResolver alloc] initWithLoaders:loaders gameVersion:mc
-            installedProjects:state.enabledByProject
-            fetchProjectVersions:[cache projectVersionsFetcherWithAPI:api loaders:loaders gameVersion:mc]
-            fetchVersion:[cache versionFetcherWithAPI:api]];
+        ModDependencyResolver *resolver = [flow resolverWithInstalledProjects:state.enabledByProject api:api];
         NSError *error;
         ModInstallPlan *plan = [resolver planForVersion:version error:&error];
-        NSString *failure = plan ? nil : ResolveErrorMessage(error, api, knownTitles, profileName);
+        NSString *failure = plan ? nil : ModResolveErrorMessage(error, api, knownTitles, flow.profileName);
         NSArray<NSString *> *conflicts = plan.incompatibleInstalledProjectIds ?: @[];
-        NSDictionary<NSString *, NSString *> *titles = ProjectTitles(conflicts, api);
+        NSDictionary<NSString *, NSString *> *titles = ModProjectTitles(conflicts, api);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             ModDetailViewController *strongSelf = weakSelf;
@@ -798,8 +642,9 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     });
 }
 
-/* The install itself, as one operation of the Mods screen: re-reads the installed state (now that the
-   operation owns the folder), resolves again (answers are cached), loads the projects, installs. */
+/* The install itself, as one operation of the Mods screen: the shared flow re-reads the installed state
+   (now that the operation owns the folder), resolves again (answers are cached), loads the projects and
+   installs. */
 - (void)startInstallOfVersion:(NSDictionary *)version {
     ModsViewController *mods = self.mods;
     ModIndex *modIndex = mods.index;
@@ -809,57 +654,21 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
         return;
     }
     ModrinthModsAPI *api = mods.api;
-    NSArray<NSString *> *loaders = mods.info.acceptedLoaders;
-    NSString *mc = mods.info.minecraftVersion ?: @"";
-    NSString *profileName = mods.info.displayName;
+    ModInstallFlow *flow = self.flow;
     NSString *rootTitle = [self projectTitle];
-    ModFetchCache *cache = self.fetchCache;
     NSDictionary<NSString *, NSString *> *knownTitles = [self.titles copy];
     __weak ModDetailViewController *weakSelf = self;
     [mods runOperation:^(void (^done)(NSError * _Nullable)) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSMutableDictionary<NSString *, NSNumber *> *enabledByFileName = [NSMutableDictionary new];
-            for (ModJar *jar in [folder scanJars]) {
-                enabledByFileName[jar.fileName] = @(jar.enabled);
-            }
-            ModInstalledState *state = InstalledStateOf(modIndex, enabledByFileName);
-            ModDependencyResolver *resolver = [[ModDependencyResolver alloc] initWithLoaders:loaders gameVersion:mc
-                installedProjects:state.enabledByProject
-                fetchProjectVersions:[cache projectVersionsFetcherWithAPI:api loaders:loaders gameVersion:mc]
-                fetchVersion:[cache versionFetcherWithAPI:api]];
-            NSError *resolveError;
-            ModInstallPlan *plan = [resolver planForVersion:version error:&resolveError];
-            if (!plan) {
-                done(DisplayError(ResolveErrorMessage(resolveError, api, knownTitles, profileName), resolveError));
+            NSError *error = [flow installVersion:version title:rootTitle index:modIndex folder:folder api:api knownTitles:knownTitles];
+            done(error);
+            if (error) {
                 return;
             }
-
-            NSMutableArray<NSString *> *projectIds = [NSMutableArray new];
-            for (NSDictionary *each in plan.versionsToInstall) {
-                NSString *projectId = StringOrNil(each[@"project_id"]);
-                if (projectId) [projectIds addObject:projectId];
-            }
-            NSDictionary<NSString *, NSDictionary *> *projects = [api projectsWithIds:projectIds];
-            if (!projects) {
-                NSString *reason = api.lastError.localizedDescription ?: @"";
-                done(DisplayError([NSString stringWithFormat:localize(@"mods.error.network", nil), reason], api.lastError));
-                return;
-            }
-
-            ModInstaller *installer = [[ModInstaller alloc] initWithIndex:modIndex downloader:[ModInstaller defaultDownloader]];
-            [installer installPlan:plan projects:projects completion:^(NSError * _Nullable error) {
-                if (error) {
-                    NSString *fileName = StringOrNil(error.userInfo[@"fileName"]) ?: rootTitle;
-                    done(DisplayError([NSString stringWithFormat:localize(@"mods.error.install", nil),
-                        fileName, error.localizedDescription ?: @""], error));
-                    return;
-                }
-                done(nil);
-                // Queued after `done`'s own hop to the main queue, so the list reload has started.
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [weakSelf installFinished];
-                });
-            }];
+            // Queued after `done`'s own hop to the main queue, so the list reload has started.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf installFinished];
+            });
         });
     }];
 }
