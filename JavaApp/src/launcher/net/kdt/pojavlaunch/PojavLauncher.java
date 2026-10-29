@@ -74,6 +74,8 @@ public class PojavLauncher {
         }
 
         System.setProperty("org.lwjgl.vulkan.libname", "libMoltenVK.dylib");
+        // Bundled SPIRV-Cross C API (from MobileGlues) instead of LWJGL's default libspirv-cross.dylib
+        System.setProperty("org.lwjgl.spvc.libname", "libspirv-cross-c-shared.0.dylib");
 
         MinecraftAccount account = MinecraftAccount.load(args[0]);
         JMinecraftVersionList.Version version = Tools.getVersionInfo(args[1]);
