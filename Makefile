@@ -341,6 +341,7 @@ test_mods:
 		$(SOURCEDIR)/Natives/mods/ModIndex.m \
 		$(SOURCEDIR)/Natives/mods/ModFolder.m \
 		$(SOURCEDIR)/Natives/mods/ModDependencyResolver.m \
+		$(SOURCEDIR)/Natives/mods/ModInstaller.m \
 		$(SOURCEDIR)/Natives/tests/mods/*.m \
 		-o $(WORKINGDIR)/tests/mods_tests
 	$(WORKINGDIR)/tests/mods_tests
