@@ -49,7 +49,7 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = localize(@"mods.browse.title", nil);
+    self.title = localize([self.mods.kind stringKey:@"browse.title"], nil);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 64;
 
@@ -84,11 +84,12 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
     [self.navigationController.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
-/* The fixed filter, e.g. "Fabric · 1.21.1". Not a control: the profile decides it. */
+/* The fixed filter, e.g. "Fabric · 1.21.1" or "Resource packs · 1.21.1". Not a control: the profile
+   decides it. */
 - (UIView *)filterChipView {
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.text = self.mods.info.displayName;
+    label.text = self.mods.filterChipText;
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     label.textColor = UIColor.secondaryLabelColor;
 
@@ -222,13 +223,15 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
     // The search appends to the array it is given: hand it a copy so the list on screen never changes
     // under the table view.
     NSMutableArray *previous = append ? [self.hits mutableCopy] : nil;
-    NSArray<NSString *> *loaders = self.mods.info.acceptedLoaders;
-    NSString *mc = self.mods.info.minecraftVersion ?: @"";
+    ModContentKind *kind = self.mods.kind;
+    NSArray<NSString *> *loaders = self.mods.loaders;
+    NSString *mc = self.mods.gameVersion;
     __weak ModBrowseViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Its own client: `reachedLastPage` and `lastError` belong to this request only.
         ModrinthModsAPI *api = [ModrinthModsAPI new];
-        NSMutableArray<NSDictionary *> *result = [api searchMods:query loaders:loaders gameVersion:mc previous:previous];
+        NSMutableArray<NSDictionary *> *result = [api searchProjects:query kind:kind profileLoaders:loaders
+            gameVersion:mc previous:previous];
         BOOL reachedEnd = api.reachedLastPage;
         NSString *failure = result ? nil : (api.lastError.localizedDescription ?: @"");
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -254,7 +257,8 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
             strongSelf.loadedQuery = query;
             strongSelf.reachedEnd = reachedEnd;
             [strongSelf showMessage:result.count == 0
-                ? [NSString stringWithFormat:localize(@"mods.browse.empty", nil), strongSelf.mods.info.displayName] : nil];
+                ? [NSString stringWithFormat:localize([strongSelf.mods.kind stringKey:@"browse.empty"], nil),
+                    strongSelf.mods.profileDisplayName] : nil];
             [strongSelf.tableView reloadData];
         });
     });
@@ -306,7 +310,8 @@ static NSString * _Nullable StringOrNil(id _Nullable value) {
     if ([self.installedProjectIds containsObject:projectId]) {
         [tags addObject:ModTagView(localize(@"mods.tag.installed", nil), UIColor.secondaryLabelColor)];
     }
-    if (ModIOSWarningForProject(projectId)) {
+    // The iOS warning list is about mods only.
+    if (self.mods.kind.isMods && ModIOSWarningForProject(projectId)) {
         [tags addObject:ModTagView(localize(@"mods.tag.ios", nil), UIColor.systemOrangeColor)];
     }
     cell.accessoryView = ModTagsAccessoryView(tags);

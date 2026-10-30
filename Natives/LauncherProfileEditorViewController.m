@@ -6,6 +6,8 @@
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "ios_uikit_bridge.h"
+#import "mods/ModContentKind.h"
+#import "mods/ModFolder.h"
 #import "mods/ModsViewController.h"
 #import "utils.h"
 
@@ -18,7 +20,26 @@
 @property(nonatomic) UIPickerView* versionPickerView;
 @property(nonatomic) UIToolbar* versionPickerToolbar;
 @property(nonatomic) int versionSelectedAt;
+
+/* Item counts shown on the Mods, Resource Packs and Shader Packs rows, by row key. A key is missing
+   when its count is unknown: the profile is unsaved or shares the base game folder. */
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *contentCounts;
+@property(nonatomic) NSUInteger contentCountsGeneration;
 @end
+
+/* The content kind a profile editor row opens, or nil if the key is not one of those rows. */
+static ModContentKind * _Nullable ContentKindForKey(NSString *key) {
+    if ([key isEqualToString:@"mods"]) return ModContentKind.mods;
+    if ([key isEqualToString:@"resourcepacks"]) return ModContentKind.resourcePacks;
+    if ([key isEqualToString:@"shaderpacks"]) return ModContentKind.shaderPacks;
+    return nil;
+}
+
+/* The base folder the content screens use (see ModsViewController). */
+static NSString *ContentGameRoot(void) {
+    const char *gameDir = getenv("GAME_DIR");
+    return gameDir ? @(gameDir) : @"";
+}
 
 @implementation LauncherProfileEditorViewController
 
@@ -33,6 +54,10 @@
     // Setup preference getter and setter
     __weak LauncherProfileEditorViewController *weakSelf = self;
     self.getPreference = ^id(NSString *section, NSString *key){
+        if (ContentKindForKey(key)) {
+            // A missing count shows an empty detail
+            return weakSelf.contentCounts[key];
+        }
         NSString *value = weakSelf.profile[key];
         if (value.length > 0 || ![weakSelf isPickFieldAtSection:section key:key]) {
             return value;
@@ -88,6 +113,10 @@
         [self changeVersionType:nil];
     };
 
+    BOOL(^enableContent)(void) = ^BOOL(){
+        return weakSelf.oldName.length > 0 && PLProfiles.current.profiles[weakSelf.oldName] != nil;
+    };
+
     self.prefContents = @[
         @[
             // General settings
@@ -110,16 +139,32 @@
               @"type": self.typeTextField,
               @"placeholder": [NSString stringWithFormat:@". -> /Documents/instances/%@", getPrefObject(@"general.game_directory")]
             },
+            // These work on the saved profile, so a profile that was never saved has none yet
             @{@"key": @"mods",
               @"icon": @"puzzlepiece",
               @"title": @"preference.profile.title.mods",
-              @"type": self.typeButton,
-              // Mods work on the saved profile, so a profile that was never saved has none yet
-              @"enableCondition": ^BOOL(){
-                  return weakSelf.oldName.length > 0 && PLProfiles.current.profiles[weakSelf.oldName] != nil;
-              },
+              @"type": self.typeChildPane,
+              @"enableCondition": enableContent,
               @"action": ^void(){
-                  [weakSelf actionOpenMods];
+                  [weakSelf actionOpenContent:ModContentKind.mods];
+              }
+            },
+            @{@"key": @"resourcepacks",
+              @"icon": @"photo.on.rectangle",
+              @"title": @"preference.profile.title.resourcepacks",
+              @"type": self.typeChildPane,
+              @"enableCondition": enableContent,
+              @"action": ^void(){
+                  [weakSelf actionOpenContent:ModContentKind.resourcePacks];
+              }
+            },
+            @{@"key": @"shaderpacks",
+              @"icon": @"sparkles",
+              @"title": @"preference.profile.title.shaderpacks",
+              @"type": self.typeChildPane,
+              @"enableCondition": enableContent,
+              @"action": ^void(){
+                  [weakSelf actionOpenContent:ModContentKind.shaderPacks];
               }
             },
             // Video and renderer settings
@@ -162,6 +207,12 @@
     ];
 
     [super viewDidLoad];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    // Also reloads the child pane rows, which show the counts known so far
+    [super viewWillAppear:animated];
+    [self refreshContentCounts];
 }
 
 - (void)actionClose {
@@ -227,11 +278,61 @@
     return YES;
 }
 
-#pragma mark Mods
+#pragma mark Mods, resource packs and shader packs
+
+/* Counts each content folder of the saved profile off the main thread, then updates the rows. */
+- (void)refreshContentCounts {
+    NSUInteger generation = ++self.contentCountsGeneration;
+    NSDictionary *saved = self.oldName.length > 0 ? PLProfiles.current.profiles[self.oldName] : nil;
+    NSString *savedGameDir = saved[@"gameDir"];
+    NSString *baseDir = ContentGameRoot();
+    if (!saved || [ModFolder isSharedGameDir:savedGameDir baseDir:baseDir]) {
+        // Nothing to count: the profile is unsaved, or its folders are shared with other profiles
+        self.contentCounts = @{};
+        [self reloadContentRows];
+        return;
+    }
+
+    NSString *gameDirPath = [ModFolder gameDirPathForGameDir:savedGameDir baseDir:baseDir];
+    NSArray<NSString *> *keys = @[@"mods", @"resourcepacks", @"shaderpacks"];
+    __weak LauncherProfileEditorViewController *weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableDictionary<NSString *, NSString *> *counts = [NSMutableDictionary new];
+        for (NSString *key in keys) {
+            ModContentKind *kind = ContentKindForKey(key);
+            NSString *dir = [gameDirPath stringByAppendingPathComponent:kind.folderName];
+            counts[key] = [NSString stringWithFormat:@"%lu", (unsigned long)[ModFolder countItemsInDir:dir kind:kind]];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LauncherProfileEditorViewController *strongSelf = weakSelf;
+            // A newer refresh supersedes this one
+            if (!strongSelf || strongSelf.contentCountsGeneration != generation) return;
+            strongSelf.contentCounts = counts;
+            [strongSelf reloadContentRows];
+        });
+    });
+}
+
+/* Reloads just the three content rows, so a text field being edited keeps focus. */
+- (void)reloadContentRows {
+    if (!self.isViewLoaded) return;
+    NSMutableArray *indexPaths = [NSMutableArray new];
+    for (NSInteger section = 0; section < self.prefContents.count; section++) {
+        if (!self.prefSectionsVisibility[section].boolValue) {
+            continue;
+        }
+        for (NSInteger row = 0; row < self.prefContents[section].count; row++) {
+            if (ContentKindForKey(self.prefContents[section][row][@"key"])) {
+                [indexPaths addObject:[NSIndexPath indexPathForRow:row inSection:section]];
+            }
+        }
+    }
+    [self.tableView reloadRowsAtIndexPaths:indexPaths withRowAnimation:UITableViewRowAnimationNone];
+}
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *item = self.prefContents[indexPath.section][indexPath.row];
-    if ([item[@"key"] isEqualToString:@"mods"]) {
+    if (ContentKindForKey(item[@"key"])) {
         // Run the action directly: the generic button handling would also show a "done" alert
         [tableView deselectRowAtIndexPath:indexPath animated:YES];
         void(^invokeAction)(void) = item[@"action"];
@@ -243,7 +344,7 @@
     [super tableView:tableView didSelectRowAtIndexPath:indexPath];
 }
 
-- (void)actionOpenMods {
+- (void)actionOpenContent:(ModContentKind *)kind {
     [self commitEditingTextField];
     NSDictionary *saved = PLProfiles.current.profiles[self.oldName];
     if (!saved) {
@@ -259,12 +360,13 @@
     NSString *savedGameDir = saved[@"gameDir"] ?: @"";
     BOOL gameDirChanged = ![gameDir isEqual:savedGameDir];
     if (!nameChanged && !versionChanged && !gameDirChanged) {
-        [self pushModsViewController];
+        [self pushContentViewController:kind];
         return;
     }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"preference.profile.title.mods", nil)
-        message:localize(@"mods.alert.save_first", nil) preferredStyle:UIAlertControllerStyleAlert];
+    NSString *titleKey = kind.isMods ? @"preference.profile.title.mods" : [kind stringKey:@"title"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(titleKey, nil)
+        message:localize([kind stringKey:@"alert.save_first"], nil) preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Save", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         if (![self saveProfile]) {
@@ -272,14 +374,14 @@
         }
         [self refreshProfileList];
         [self.tableView reloadData];
-        [self pushModsViewController];
+        [self pushContentViewController:kind];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)pushModsViewController {
+- (void)pushContentViewController:(ModContentKind *)kind {
     NSString *profileName = self.oldName;
-    ModsViewController *vc = [[ModsViewController alloc] initWithProfileName:profileName];
+    ModsViewController *vc = [[ModsViewController alloc] initWithProfileName:profileName kind:kind];
     __weak LauncherProfileEditorViewController *weakSelf = self;
     vc.gameDirChanged = ^(NSString *newGameDir) {
         LauncherProfileEditorViewController *strongSelf = weakSelf;

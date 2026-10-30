@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "installer/modpack/ModpackAPI.h"
+#import "ModContentKind.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -9,10 +10,20 @@ NS_ASSUME_NONNULL_BEGIN
    thread. On failure they return nil and set `lastError`. */
 @interface ModrinthModsAPI : ModpackAPI
 
-/* Searches for mods that run on `loaders` and `mc` and work client-side. `query` may be empty, which
-   lists the most downloaded mods instead. Loads 50 hits starting at `previous.count`, appends them to
-   `previous` (or to a new array when nil) and returns that array; sets `reachedLastPage`. Each hit has
-   the keys id, slug, title, description, author, downloads, imageUrl (a missing value is left out). */
+/* Searches for projects of `kind` that fit `mc`. The facets are the kind's project type, a `categories:`
+   group from `[kind searchCategoriesForProfileLoaders:profileLoaders]` (left out when that list is empty),
+   `versions:<mc>`, and, for mods only, the client-side group. `query` may be empty, which lists the most
+   downloaded projects instead. Loads 50 hits starting at `previous.count`, appends them to `previous`
+   (or to a new array when nil) and returns that array; sets `reachedLastPage`. Each hit has the keys id,
+   slug, title, description, author, downloads, imageUrl (a missing value is left out). */
+- (nullable NSMutableArray<NSDictionary *> *)searchProjects:(NSString *)query
+                                                       kind:(ModContentKind *)kind
+                                             profileLoaders:(NSArray<NSString *> *)profileLoaders
+                                                gameVersion:(NSString *)mc
+                                                   previous:(nullable NSMutableArray *)previous;
+
+/* Searches for mods that run on `loaders` and `mc` and work client-side: `searchProjects:` with the mods
+   kind. */
 - (nullable NSMutableArray<NSDictionary *> *)searchMods:(NSString *)query
                                                 loaders:(NSArray<NSString *> *)loaders
                                             gameVersion:(NSString *)mc

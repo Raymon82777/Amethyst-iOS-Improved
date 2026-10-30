@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "ModContentKind.h"
 #import "ModDependencyResolver.h"
 #import "ModFolder.h"
 #import "ModIndex.h"
@@ -47,11 +48,18 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
    Installed Mods screen's Update / Switch actions. */
 @interface ModInstallFlow : NSObject
 
-/* `loaders` and `mc` are the profile's accepted loaders and Minecraft version, `profileName` its display
-   name (for messages). Every resolver made by this flow fetches through `fetchCache`. */
+/* `kind` is the content being installed. `loaders` are the loaders to request versions for (the profile's
+   accepted loaders for mods, `[kind loadersForProfileLoaders:]` for packs) and `mc` the Minecraft
+   version, `profileName` the profile's display name (for messages). Every resolver made by this flow
+   fetches through `fetchCache`. */
+- (instancetype)initWithKind:(ModContentKind *)kind loaders:(NSArray<NSString *> *)loaders gameVersion:(NSString *)mc
+                 profileName:(NSString *)profileName fetchCache:(ModFetchCache *)fetchCache;
+
+/* The same for mods (`ModContentKind.mods`). */
 - (instancetype)initWithLoaders:(NSArray<NSString *> *)loaders gameVersion:(NSString *)mc
                     profileName:(NSString *)profileName fetchCache:(ModFetchCache *)fetchCache;
 
+@property(nonatomic, readonly) ModContentKind *kind;
 @property(nonatomic, readonly, copy) NSArray<NSString *> *loaders;
 @property(nonatomic, readonly, copy) NSString *gameVersion;
 @property(nonatomic, readonly, copy) NSString *profileName;
@@ -60,6 +68,13 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
 /* A resolver for the profile that fetches with `api` through the cache. */
 - (ModDependencyResolver *)resolverWithInstalledProjects:(NSDictionary<NSString *, NSNumber *> *)installed
                                                      api:(ModrinthModsAPI *)api;
+
+/* What installing `version` involves. For mods it is the resolver's plan (the version plus its required
+   dependencies); for packs it is that one version (`+[ModInstallPlan planForSingleVersion:]`, never
+   fails). Blocking. Returns nil with `error` set when a mod's dependencies cannot be resolved. */
+- (nullable ModInstallPlan *)planForVersion:(NSDictionary *)version
+                          installedProjects:(NSDictionary<NSString *, NSNumber *> *)installed
+                                        api:(ModrinthModsAPI *)api error:(NSError **)error;
 
 /* Installs `version` and whatever it requires as one set (see ModInstaller): reads what is installed
    now (scans `folder`), resolves, loads the projects, installs. Blocking, so call it off the main queue,

@@ -23,6 +23,50 @@ static NSError *ExistsError(NSString *fileName) {
                            userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"A mod named %@ already exists.", fileName]}];
 }
 
+/* YES for a leftover download: a name ending in ".part". A folder pack that happens to end that way
+   is the user's data and is not one. */
+static BOOL IsStrayPart(NSString *dir, NSString *name, ModContentKind *kind) {
+    if (![name hasSuffix:kPartSuffix]) return NO;
+    if (!kind.listsFolders) return YES;
+    BOOL isFolder = NO;
+    BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:[dir stringByAppendingPathComponent:name] isDirectory:&isFolder];
+    return !(exists && isFolder);
+}
+
+/* Decides whether the directory entry `name` is listed for `kind`, the same way for scanning and
+   counting. Files must be "<name>.<ext>" or "<name>.<ext>.disabled" (case-sensitive); for kinds that list
+   folders, visible folders count too. On YES, `fileName` is the name without ".disabled". The record
+   file is never listed. Stray .part files are the caller's business. */
+static BOOL ClassifyEntry(NSString *dir, NSString *name, ModContentKind *kind, NSString *_Nullable *_Nonnull fileName, BOOL *enabled, BOOL *isDirectory) {
+    if ([name isEqualToString:ModIndexFileName]) return NO;
+
+    NSString *path = [dir stringByAppendingPathComponent:name];
+    NSString *enabledSuffix = [@"." stringByAppendingString:kind.fileExtension];
+    BOOL isFolder = NO;
+    BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isFolder];
+
+    if (exists && isFolder && kind.listsFolders) {
+        if ([name hasPrefix:@"."]) return NO;
+        *fileName = name;
+        *enabled = YES;
+        *isDirectory = YES;
+        return YES;
+    }
+
+    if ([name hasSuffix:enabledSuffix]) {
+        *enabled = YES;
+        *fileName = name;
+    } else if ([name hasSuffix:[enabledSuffix stringByAppendingString:kDisabledSuffix]]) {
+        *enabled = NO;
+        *fileName = [name substringToIndex:name.length - kDisabledSuffix.length];
+    } else {
+        return NO;
+    }
+    if (!exists || isFolder) return NO;
+    *isDirectory = NO;
+    return YES;
+}
+
 /* Feeds the file to `consume` in 1 MB chunks. NO if it cannot be opened or read. */
 static BOOL ForEachChunk(NSString *path, void (^consume)(NSData *chunk)) {
     NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
@@ -64,10 +108,27 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
 @implementation ModFolder
 
 - (instancetype)initWithModsDir:(NSString *)modsDir {
+    return [self initWithModsDir:modsDir kind:ModContentKind.mods];
+}
+
+- (instancetype)initWithModsDir:(NSString *)modsDir kind:(ModContentKind *)kind {
     self = [super init];
+    _kind = kind;
     _modsDir = [modsDir copy];
     [NSFileManager.defaultManager createDirectoryAtPath:_modsDir withIntermediateDirectories:YES attributes:nil error:nil];
     return self;
+}
+
++ (NSUInteger)countItemsInDir:(NSString *)dir kind:(ModContentKind *)kind {
+    NSUInteger count = 0;
+    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] ?: @[]) {
+        if (IsStrayPart(dir, name, kind)) continue;
+        NSString *fileName = nil;
+        BOOL enabled = NO;
+        BOOL isDirectory = NO;
+        if (ClassifyEntry(dir, name, kind, &fileName, &enabled, &isDirectory)) count++;
+    }
+    return count;
 }
 
 - (NSArray<ModJar *> *)scanJars {
@@ -77,30 +138,21 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
         if ([name isEqualToString:ModIndexFileName]) continue;
         NSString *path = [self.modsDir stringByAppendingPathComponent:name];
 
-        if ([name hasSuffix:kPartSuffix]) {
+        if (IsStrayPart(self.modsDir, name, self.kind)) {
             [fm removeItemAtPath:path error:nil];
             continue;
         }
 
-        BOOL enabled;
-        NSString *fileName;
-        if ([name hasSuffix:@".jar"]) {
-            enabled = YES;
-            fileName = name;
-        } else if ([name hasSuffix:[@".jar" stringByAppendingString:kDisabledSuffix]]) {
-            enabled = NO;
-            fileName = [name substringToIndex:name.length - kDisabledSuffix.length];
-        } else {
-            continue;
-        }
-
+        NSString *fileName = nil;
+        BOOL enabled = NO;
         BOOL isDirectory = NO;
-        if (![fm fileExistsAtPath:path isDirectory:&isDirectory] || isDirectory) continue;
+        if (!ClassifyEntry(self.modsDir, name, self.kind, &fileName, &enabled, &isDirectory)) continue;
 
         ModJar *jar = [ModJar new];
         jar.fileName = fileName;
         jar.path = path;
         jar.enabled = enabled;
+        jar.isDirectory = isDirectory;
         [jars addObject:jar];
     }
     return [jars sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(ModJar *a, ModJar *b) {
@@ -110,6 +162,11 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
 
 - (BOOL)setJar:(ModJar *)jar enabled:(BOOL)enabled error:(NSError **)error {
     if (jar.enabled == enabled) return YES;
+    if (jar.isDirectory) {
+        // Folder packs are never renamed; the UI gives them no switch.
+        if (error) *error = ExistsError(jar.fileName);
+        return NO;
+    }
 
     NSString *directory = [jar.path stringByDeletingLastPathComponent];
     NSString *targetName = enabled ? jar.fileName : [jar.fileName stringByAppendingString:kDisabledSuffix];
@@ -139,6 +196,14 @@ static NSString *HexString(const unsigned char *bytes, NSUInteger length) {
         if (error) {
             *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteInvalidFileNameError
                                      userInfo:@{NSLocalizedDescriptionKey: @"The mod does not have a valid file name."}];
+        }
+        return nil;
+    }
+    // Packs must be zips. Mods are not checked here: the callers decide what a mod looks like.
+    if (!self.kind.isMods && ![name hasSuffix:[@"." stringByAppendingString:self.kind.fileExtension]]) {
+        if (error) {
+            *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteInvalidFileNameError
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The file name must end in .%@.", self.kind.fileExtension]}];
         }
         return nil;
     }

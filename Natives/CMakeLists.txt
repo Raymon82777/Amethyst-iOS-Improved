@@ -132,6 +132,7 @@ add_executable(AngelAuraAmethyst
   installer/modpack/CurseForgeAPI.m
   installer/modpack/ModrinthAPI.m
 
+  mods/ModContentKind.m
   mods/ModIndex.m
   mods/ModFolder.m
   mods/ModProfileInfo.m

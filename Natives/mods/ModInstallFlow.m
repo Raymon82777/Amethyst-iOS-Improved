@@ -156,7 +156,13 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
 
 - (instancetype)initWithLoaders:(NSArray<NSString *> *)loaders gameVersion:(NSString *)mc
                     profileName:(NSString *)profileName fetchCache:(ModFetchCache *)fetchCache {
+    return [self initWithKind:ModContentKind.mods loaders:loaders gameVersion:mc profileName:profileName fetchCache:fetchCache];
+}
+
+- (instancetype)initWithKind:(ModContentKind *)kind loaders:(NSArray<NSString *> *)loaders gameVersion:(NSString *)mc
+                 profileName:(NSString *)profileName fetchCache:(ModFetchCache *)fetchCache {
     self = [super init];
+    _kind = kind;
     _loaders = [loaders copy];
     _gameVersion = [mc copy];
     _profileName = [profileName copy];
@@ -173,6 +179,15 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
         fetchVersion:[cache versionFetcherWithAPI:api]];
 }
 
+- (nullable ModInstallPlan *)planForVersion:(NSDictionary *)version
+                          installedProjects:(NSDictionary<NSString *, NSNumber *> *)installed
+                                        api:(ModrinthModsAPI *)api error:(NSError **)error {
+    if (!self.kind.isMods) {
+        return [ModInstallPlan planForSingleVersion:version];
+    }
+    return [[self resolverWithInstalledProjects:installed api:api] planForVersion:version error:error];
+}
+
 - (nullable NSError *)installVersion:(NSDictionary *)version
                                title:(NSString *)title
                                index:(ModIndex *)index
@@ -180,9 +195,8 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
                                  api:(ModrinthModsAPI *)api
                          knownTitles:(NSDictionary<NSString *, NSString *> *)knownTitles {
     ModInstalledState *state = [ModInstalledState stateOfIndex:index folder:folder];
-    ModDependencyResolver *resolver = [self resolverWithInstalledProjects:state.enabledByProject api:api];
     NSError *resolveError;
-    ModInstallPlan *plan = [resolver planForVersion:version error:&resolveError];
+    ModInstallPlan *plan = [self planForVersion:version installedProjects:state.enabledByProject api:api error:&resolveError];
     if (!plan) {
         return ModDisplayError(ModResolveErrorMessage(resolveError, api, knownTitles, self.profileName), resolveError);
     }
@@ -200,7 +214,7 @@ NSString *ModResolveErrorMessage(NSError * _Nullable error, ModrinthModsAPI *api
 
     // The installer calls back on another queue; this waits for it, so a caller can install several
     // sets one after the other.
-    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index downloader:[ModInstaller defaultDownloader]];
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index downloader:[ModInstaller defaultDownloader] kind:self.kind];
     dispatch_semaphore_t finished = dispatch_semaphore_create(0);
     __block NSError *installError = nil;
     [installer installPlan:plan projects:projects completion:^(NSError * _Nullable error) {

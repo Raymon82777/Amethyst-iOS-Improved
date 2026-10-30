@@ -1,4 +1,5 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "LauncherPreferences.h"
 #import "ModBrowseViewController.h"
 #import "ModDetailViewController.h"
 #import "ModInstallFlow.h"
@@ -42,6 +43,22 @@ static NSString *LoaderDisplayName(NSString *loader) {
     return names[loader] ?: loader;
 }
 
+/* The profile's Minecraft version: the version JSON's, else for latest-release / latest-snapshot the
+   latest version the launcher saved from the version manifest; @"" when unknown. */
+static NSString *ResolvedGameVersion(ModProfileInfo *info, NSString * _Nullable versionId) {
+    NSString *mc = StringOrNil(info.minecraftVersion);
+    if (mc) {
+        return mc;
+    }
+    if ([versionId isEqualToString:@"latest-release"]) {
+        return StringOrNil(getPrefObject(@"internal.latest_version.release")) ?: @"";
+    }
+    if ([versionId isEqualToString:@"latest-snapshot"]) {
+        return StringOrNil(getPrefObject(@"internal.latest_version.snapshot")) ?: @"";
+    }
+    return @"";
+}
+
 #pragma mark - Rows
 
 /* One jar as shown in the list. Built on the work queue, read-only once published to the main queue
@@ -50,6 +67,7 @@ static NSString *LoaderDisplayName(NSString *loader) {
 @property(nonatomic) ModJar *jar;
 @property(nonatomic, copy) NSString *fileName;
 @property(nonatomic) BOOL enabled;
+@property(nonatomic) BOOL isFolder;                        // a folder pack (copied from `jar`, safe to read on the main queue)
 @property(nonatomic, copy, nullable) NSDictionary *entry; // the record entry, nil when not identified
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy, nullable) NSString *subtitle; // the installed version (or the "Added manually" line)
@@ -94,12 +112,12 @@ static NSString *LoaderDisplayName(NSString *loader) {
 @end
 
 /* A mod row: icon, title, version line, and on the right an Update tag (when there is an update) beside
-   the on/off switch. */
+   the on/off switch (none for a folder pack). */
 @interface ModsCell : UITableViewCell
 @property(nonatomic, readonly) UISwitch *toggle;
 @property(nonatomic, readonly) UIButton *updateButton;
 @property(nonatomic, readonly) UIStackView *accessoryStack;
-- (void)setShowsUpdate:(BOOL)showsUpdate;
+- (void)setShowsUpdate:(BOOL)showsUpdate showsToggle:(BOOL)showsToggle;
 @end
 
 @implementation ModsCell
@@ -123,12 +141,13 @@ static NSString *LoaderDisplayName(NSString *loader) {
     _accessoryStack.alignment = UIStackViewAlignmentCenter;
     _accessoryStack.spacing = 10;
     self.accessoryView = _accessoryStack;
-    [self setShowsUpdate:NO];
+    [self setShowsUpdate:NO showsToggle:YES];
     return self;
 }
 
-- (void)setShowsUpdate:(BOOL)showsUpdate {
+- (void)setShowsUpdate:(BOOL)showsUpdate showsToggle:(BOOL)showsToggle {
     self.updateButton.hidden = !showsUpdate;
+    self.toggle.hidden = !showsToggle;
     CGSize size = [self.accessoryStack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
     self.accessoryStack.frame = CGRectMake(0, 0, ceil(size.width), ceil(size.height));
     [self setNeedsLayout];
@@ -200,12 +219,13 @@ static NSDictionary * _Nullable CachedMetadata(ModJar *jar, NSMutableDictionary 
 
 /* Looks up jars that are not in the record on Modrinth (one hash request, one projects request).
    Matches are added to the record, misses go to unknownHashes. Returns YES if the record changed.
-   Any failed request (offline) leaves the record alone so the jars are tried again next time. */
+   Any failed request (offline) leaves the record alone so the jars are tried again next time.
+   Folder packs are never hashed or looked up. */
 static BOOL IdentifyJars(NSArray<ModJar *> *jars, ModIndex *modIndex, ModrinthModsAPI *api, NSMutableDictionary *cache) {
     // Several jars can share a hash (copies of one file): each of them gets the result.
     NSMutableDictionary<NSString *, NSMutableArray<ModJar *> *> *jarsByHash = [NSMutableDictionary new];
     for (ModJar *jar in jars) {
-        if (modIndex.entries[jar.fileName]) continue;
+        if (jar.isDirectory || modIndex.entries[jar.fileName]) continue;
         NSString *sha1 = CachedSha1(jar, cache);
         if (!sha1 || [modIndex.unknownHashes containsObject:sha1]) continue;
         NSMutableArray<ModJar *> *sameHash = jarsByHash[sha1];
@@ -260,6 +280,7 @@ static BOOL BackfillMatchFields(NSArray<ModJar *> *jars, ModIndex *modIndex, Mod
                                 NSMutableDictionary *cache, NSMutableSet<NSString *> *tried) {
     NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *fileNamesByHash = [NSMutableDictionary new];
     for (ModJar *jar in jars) {
+        if (jar.isDirectory) continue;
         NSDictionary *entry = modIndex.entries[jar.fileName];
         if (!entry || !StringOrNil(entry[@"projectId"]) || HasMatchFields(entry)) continue;
         NSString *sha1 = EntrySha1(jar, entry, cache);
@@ -357,9 +378,11 @@ static NSString * _Nullable BuiltForText(NSDictionary *entry, NSString *mc) {
 }
 
 /* Scans the folder, prunes and fills in the record, then finds the mods that don't fit the profile and
-   (for the ones that do) the updates. Builds the rows sorted by title. */
+   (for the ones that do) the updates. Builds the rows sorted by title. Packs never read jar metadata,
+   and folder packs are never identified or checked (their rows have no record entry). */
 static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthModsAPI *api, NSMutableDictionary *cache,
                                 ModsCheckState *checkState, NSArray<NSString *> *loaders, NSString *mc) {
+    ModContentKind *kind = folder.kind;
     NSArray<ModJar *> *jars = [folder scanJars];
 
     NSMutableSet<NSString *> *fileNames = [NSMutableSet new];
@@ -387,6 +410,7 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     NSMutableArray<NSString *> *releaseHashes = [NSMutableArray new];
     NSMutableArray<NSString *> *otherHashes = [NSMutableArray new];
     for (ModJar *jar in jars) {
+        if (jar.isDirectory) continue;
         NSDictionary *entry = modIndex.entries[jar.fileName];
         if (!entry || !StringOrNil(entry[@"projectId"])) continue;
         NSString *sha1 = EntrySha1(jar, entry, cache);
@@ -427,17 +451,34 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     NSString *manualLabel = localize(@"mods.row.manual", nil);
     NSMutableArray<ModsRow *> *rows = [NSMutableArray new];
     for (ModJar *jar in jars) {
+        if (jar.isDirectory) {
+            // A folder pack: no record entry, so no detail page, version change or update.
+            ModsRow *row = [ModsRow new];
+            row.jar = jar;
+            row.isFolder = jar.isDirectory;
+            row.fileName = jar.fileName;
+            row.enabled = jar.enabled;
+            row.title = jar.fileName;
+            row.subtitle = localize(@"packs.row.folder", nil);
+            [rows addObject:row];
+            continue;
+        }
         NSDictionary *entry = [modIndex.entries[jar.fileName] copy];
         NSString *title = StringOrNil(entry[@"title"]);
         NSString *version = StringOrNil(entry[@"versionNumber"]);
-        if (!title || !version) {
+        if (kind.isMods && (!title || !version)) {
             NSDictionary *metadata = CachedMetadata(jar, cache);
             title = title ?: StringOrNil(metadata[@"name"]);
             version = version ?: StringOrNil(metadata[@"version"]);
         }
+        if (!kind.isMods && !title && [jar.fileName.pathExtension.lowercaseString isEqualToString:kind.fileExtension]) {
+            // "Faithful 32x.zip" is listed as "Faithful 32x".
+            title = StringOrNil(jar.fileName.stringByDeletingPathExtension);
+        }
 
         ModsRow *row = [ModsRow new];
         row.jar = jar;
+        row.isFolder = jar.isDirectory;
         row.fileName = jar.fileName;
         row.enabled = jar.enabled;
         row.entry = entry;
@@ -501,8 +542,13 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
 @implementation ModsViewController
 
 - (instancetype)initWithProfileName:(NSString *)profileName {
+    return [self initWithProfileName:profileName kind:ModContentKind.mods];
+}
+
+- (instancetype)initWithProfileName:(NSString *)profileName kind:(ModContentKind *)kind {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     _profileName = [profileName copy];
+    _kind = kind;
     _api = [ModrinthModsAPI new];
     _workQueue = dispatch_queue_create("net.kdt.pojavlaunch.mods", DISPATCH_QUEUE_SERIAL);
     _jarCache = [NSMutableDictionary new];
@@ -517,12 +563,21 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     NSString *versionId = PLProfiles.current.profiles[profileName][@"lastVersionId"];
     NSString *versionsDir = [GameRoot() stringByAppendingPathComponent:@"versions"];
     _info = [ModProfileInfo infoForVersionId:versionId ?: @"" versionsDir:versionsDir];
+    _loaders = [kind loadersForProfileLoaders:_info.acceptedLoaders];
+    _gameVersion = ResolvedGameVersion(_info, versionId);
+    if (kind.isMods) {
+        _profileDisplayName = _info.displayName;
+        _filterChipText = _info.displayName;
+    } else {
+        _profileDisplayName = [NSString stringWithFormat:localize(@"packs.profile_name", nil), _gameVersion];
+        _filterChipText = [NSString stringWithFormat:localize([kind stringKey:@"chip"], nil), _gameVersion];
+    }
     return self;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = localize(@"mods.title", nil);
+    self.title = localize([self.kind stringKey:@"title"], nil);
     self.definesPresentationContext = YES;
 
     NSString *unavailableMessage = [self prepareFolder];
@@ -541,7 +596,7 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     self.importItem.accessibilityLabel = localize(@"mods.action.import", nil);
     self.addItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
         target:self action:@selector(actionAdd)];
-    self.addItem.accessibilityLabel = localize(@"mods.action.add", nil);
+    self.addItem.accessibilityLabel = localize([self.kind stringKey:@"action.add"], nil);
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.hidesWhenStopped = YES;
     self.navigationItem.rightBarButtonItems = @[
@@ -573,26 +628,28 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     [super viewDidAppear:animated];
     if (self.showFolderNotice) {
         self.showFolderNotice = NO;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"mods.title", nil)
-            message:localize(@"mods.alert.own_folder", nil) preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize([self.kind stringKey:@"title"], nil)
+            message:localize([self.kind stringKey:@"alert.own_folder"], nil) preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil) style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
 }
 
-/* Sets up `folder` and `index`, first giving a modded profile on the shared game folder its own folder.
-   Returns the message to show instead of the list when the profile cannot have mods. */
+/* Sets up `folder` and `index`, first giving a profile on the shared game folder its own folder (for
+   mods only a modded one; for packs any profile, once its Minecraft version is known).
+   Returns the message to show instead of the list when the profile cannot have this content. */
 - (nullable NSString *)prepareFolder {
-    if (!self.info.isModded) {
+    ModContentKind *kind = self.kind;
+    if (kind.isMods && !self.info.isModded) {
         return localize(@"mods.empty.vanilla", nil);
     }
-    if (self.info.minecraftVersion.length == 0) {
-        return localize(@"mods.empty.unknown_version", nil);
+    if (self.gameVersion.length == 0) {
+        return localize([kind stringKey:@"empty.unknown_version"], nil);
     }
 
     NSMutableDictionary *profile = PLProfiles.current.profiles[self.profileName];
     if (!profile) {
-        return localize(@"mods.empty.vanilla", nil);
+        return localize(kind.isMods ? @"mods.empty.vanilla" : [kind stringKey:@"empty.unknown_version"], nil);
     }
     NSString *baseDir = GameRoot();
     NSString *gameDir = profile[@"gameDir"];
@@ -613,8 +670,8 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
         }
     }
 
-    NSString *modsDir = [[ModFolder gameDirPathForGameDir:gameDir baseDir:baseDir] stringByAppendingPathComponent:@"mods"];
-    _folder = [[ModFolder alloc] initWithModsDir:modsDir];
+    NSString *modsDir = [[ModFolder gameDirPathForGameDir:gameDir baseDir:baseDir] stringByAppendingPathComponent:kind.folderName];
+    _folder = [[ModFolder alloc] initWithModsDir:modsDir kind:kind];
     _index = [[ModIndex alloc] initWithModsDir:modsDir];
     return nil;
 }
@@ -751,8 +808,8 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     ModrinthModsAPI *api = self.api;
     NSMutableDictionary *cache = self.jarCache;
     ModsCheckState *checkState = self.checkState;
-    NSArray<NSString *> *loaders = self.info.acceptedLoaders;
-    NSString *mc = self.info.minecraftVersion ?: @"";
+    NSArray<NSString *> *loaders = self.loaders;
+    NSString *mc = self.gameVersion;
     dispatch_async(self.workQueue, ^{
         ModsLoadResult *result = LoadRows(folder, modIndex, api, cache, checkState, loaders, mc);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -790,7 +847,7 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     }
     self.rowsByFileName = byFileName;
     [self applyFilter];
-    [self showMessage:rows.count == 0 ? localize(@"mods.empty.none", nil) : nil];
+    [self showMessage:rows.count == 0 ? localize([self.kind stringKey:@"empty.none"], nil) : nil];
     [self.tableView reloadData];
 }
 
@@ -832,10 +889,11 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
     return titles;
 }
 
-/* Runs `confirmed` at once, or after asking when enabled mods need `row`. */
+/* Runs `confirmed` at once, or after asking when enabled mods need `row`. Packs have no dependencies,
+   so for them it never asks. */
 - (void)confirmRemovingRow:(ModsRow *)row actionTitle:(NSString *)actionTitle
                  confirmed:(void (^)(void))confirmed cancelled:(nullable void (^)(void))cancelled {
-    NSArray<NSString *> *titles = [self enabledDependentTitlesOfRow:row];
+    NSArray<NSString *> *titles = self.kind.isMods ? [self enabledDependentTitlesOfRow:row] : @[];
     if (titles.count == 0) {
         confirmed();
         return;
@@ -929,8 +987,8 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
 #pragma mark Updates and version changes
 
 - (ModInstallFlow *)makeInstallFlow {
-    return [[ModInstallFlow alloc] initWithLoaders:self.info.acceptedLoaders gameVersion:self.info.minecraftVersion ?: @""
-        profileName:self.info.displayName fetchCache:[ModFetchCache new]];
+    return [[ModInstallFlow alloc] initWithKind:self.kind loaders:self.loaders gameVersion:self.gameVersion
+        profileName:self.profileDisplayName fetchCache:[ModFetchCache new]];
 }
 
 /* `fileNames` in the order of the list (by title); names without a row are left out. */
@@ -1016,11 +1074,11 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     if (!row || !version || self.busy) {
         return;
     }
-    [self installVersions:@{row.fileName: version} failureKey:@"mods.error.update_failed"];
+    [self installVersions:@{row.fileName: version} failureKey:[self.kind stringKey:@"error.update_failed"]];
 }
 
 - (void)actionUpdateAll {
-    [self installVersions:self.availableUpdates failureKey:@"mods.error.update_failed"];
+    [self installVersions:self.availableUpdates failureKey:[self.kind stringKey:@"error.update_failed"]];
 }
 
 /* Replaces every mismatched mod with its newest version for the profile (a release when there is one,
@@ -1049,6 +1107,7 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     ModIndex *modIndex = self.index;
     ModrinthModsAPI *api = self.api;
     dispatch_queue_t queue = self.workQueue;
+    NSString *failureKey = [self.kind stringKey:@"error.switch_failed"];
     __weak ModsViewController *weakSelf = self;
     [self runOperation:^(void (^done)(NSError * _Nullable)) {
         dispatch_async(queue, ^{
@@ -1097,7 +1156,7 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
             dispatch_async(dispatch_get_main_queue(), ^{
                 weakSelf.noVersionFileNames = noVersion;
             });
-            done(FailureSummary(failures, @"mods.error.switch_failed"));
+            done(FailureSummary(failures, failureKey));
         });
     }];
 }
@@ -1151,8 +1210,9 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     if (self.busy || !self.folder) {
         return;
     }
-    // The type the system knows for ".jar" files; any file if it knows none (importJarAtURL: checks the name).
-    UTType *jarType = [UTType typeWithFilenameExtension:@"jar"];
+    // The type the system knows for ".jar" (packs: ".zip") files; any file if it knows none
+    // (importJarAtURL: checks the name).
+    UTType *jarType = [UTType typeWithFilenameExtension:self.kind.fileExtension];
     NSArray<UTType *> *types = @[jarType ?: UTTypeData];
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     picker.delegate = self;
@@ -1172,14 +1232,15 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     if (self.busy || !self.folder) {
         return;
     }
+    NSString *extension = self.kind.fileExtension;
     NSString *fileName = url.lastPathComponent;
-    if (![fileName.pathExtension.lowercaseString isEqualToString:@"jar"]) {
-        showDialog(localize(@"Error", nil), localize(@"mods.import.not_jar", nil));
+    if (![fileName.pathExtension.lowercaseString isEqualToString:extension]) {
+        showDialog(localize(@"Error", nil), localize([self.kind stringKey:@"import.not_jar"], nil));
         return;
     }
-    // The folder only lists lowercase ".jar" files.
-    if (![fileName.pathExtension isEqualToString:@"jar"]) {
-        fileName = [fileName.stringByDeletingPathExtension stringByAppendingPathExtension:@"jar"];
+    // The folder only lists lowercase ".jar" (packs: ".zip") files.
+    if (![fileName.pathExtension isEqualToString:extension]) {
+        fileName = [fileName.stringByDeletingPathExtension stringByAppendingPathExtension:extension];
     }
 
     NSString *path = [self.folder.modsDir stringByAppendingPathComponent:fileName];
@@ -1191,7 +1252,7 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     }
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:fileName
-        message:localize(@"mods.import.exists", nil) preferredStyle:UIAlertControllerStyleAlert];
+        message:localize([self.kind stringKey:@"import.exists"], nil) preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"mods.import.replace", nil) style:UIAlertActionStyleDestructive
         handler:^(UIAlertAction *action) {
             [self importURL:url asFileName:fileName replace:YES keepBoth:NO];
@@ -1267,21 +1328,22 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     return [self headerText];
 }
 
-/* "6 mods · Fabric 0.16.5 · 1.21.1" (no loader version when it is unknown). */
+/* "6 mods · Fabric 0.16.5 · 1.21.1" (no loader version when it is unknown); packs have no loader:
+   "3 resource packs · 1.21.1". */
 - (NSString *)headerText {
     NSUInteger count = self.rows.count;
     NSMutableArray<NSString *> *parts = [NSMutableArray new];
-    [parts addObject:count == 1 ? localize(@"mods.header.count.one", nil)
-        : [NSString stringWithFormat:localize(@"mods.header.count.other", nil), (int)count]];
+    [parts addObject:count == 1 ? localize([self.kind stringKey:@"header.count.one"], nil)
+        : [NSString stringWithFormat:localize([self.kind stringKey:@"header.count.other"], nil), (int)count]];
 
-    NSString *loader = self.info.loader;
+    NSString *loader = self.kind.isMods ? self.info.loader : nil;
     NSString *loaderName = loader ? LoaderDisplayName(loader) : nil;
     if (loaderName) {
         NSString *loaderVersion = self.info.loaderVersion;
         [parts addObject:loaderVersion.length > 0 ? [NSString stringWithFormat:@"%@ %@", loaderName, loaderVersion] : loaderName];
     }
-    if (self.info.minecraftVersion.length > 0) {
-        [parts addObject:self.info.minecraftVersion];
+    if (self.gameVersion.length > 0) {
+        [parts addObject:self.gameVersion];
     }
     return [parts componentsJoinedByString:@" · "];
 }
@@ -1290,9 +1352,9 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
 - (NSString *)bannerText {
     if ([self currentBanner] == ModsBannerMismatch) {
         NSUInteger count = self.mismatchedFileNames.count;
-        NSString *mc = self.info.minecraftVersion ?: @"";
-        return count == 1 ? [NSString stringWithFormat:localize(@"mods.banner.mismatch.one", nil), mc]
-            : [NSString stringWithFormat:localize(@"mods.banner.mismatch.other", nil), (int)count, mc];
+        NSString *mc = self.gameVersion;
+        return count == 1 ? [NSString stringWithFormat:localize([self.kind stringKey:@"banner.mismatch.one"], nil), mc]
+            : [NSString stringWithFormat:localize([self.kind stringKey:@"banner.mismatch.other"], nil), (int)count, mc];
     }
     NSUInteger count = self.availableUpdates.count;
     return count == 1 ? localize(@"mods.banner.updates.one", nil)
@@ -1329,7 +1391,7 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     if (row.mismatched) {
         *warning = YES;
         NSString *note = [self.noVersionFileNames containsObject:row.fileName]
-            ? [NSString stringWithFormat:localize(@"mods.row.no_version", nil), self.info.minecraftVersion ?: @""]
+            ? [NSString stringWithFormat:localize(@"mods.row.no_version", nil), self.gameVersion]
             : [NSString stringWithFormat:localize(@"mods.row.built_for", nil), row.builtFor ?: @"?"];
         return row.subtitle ? [NSString stringWithFormat:@"%@ · %@", row.subtitle, note] : note;
     }
@@ -1371,7 +1433,8 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
         cell.imageView.image = placeholder;
     }
 
-    [cell setShowsUpdate:row.update != nil];
+    // Folder packs cannot be switched off (renaming a folder does not hide it from the game).
+    [cell setShowsUpdate:row.update != nil showsToggle:!row.isFolder];
     cell.updateButton.enabled = !self.busy;
     [cell.toggle setOn:row.enabled animated:NO];
     cell.toggle.enabled = !self.busy;

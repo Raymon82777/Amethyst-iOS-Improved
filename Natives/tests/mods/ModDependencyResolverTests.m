@@ -297,6 +297,17 @@ static void testEmbeddedIgnored(void) {
     MT_EQUAL(net.versionFetches, (@[]));
 }
 
+/* Packs never resolve dependencies: a required one is ignored and nothing is fetched. */
+static void testSingleVersionPlanIgnoresDependencies(void) {
+    NSMutableDictionary *version = [Ver(@"pack-1", @"PACK", @[]) mutableCopy];
+    version[@"dependencies"] = @[@{@"project_id": @"MOD", @"dependency_type": @"required"}];
+    ModInstallPlan *plan = [ModInstallPlan planForSingleVersion:version];
+    MT_EQUAL(plan.versionsToInstall, (@[version]));
+    MT_EQUAL(plan.projectIdsToEnable, (@[]));
+    MT_EQUAL(plan.incompatibleInstalledProjectIds, (@[]));
+    MT_EQUAL(plan.optionalProjectIds, (@[]));
+}
+
 void ModDependencyResolverTests(void) {
     MT_RUN(testRootOnly);
     MT_RUN(testInstallsMissingRequired);
@@ -315,4 +326,5 @@ void ModDependencyResolverTests(void) {
     MT_RUN(testIncompatibleAndOptional);
     MT_RUN(testOptionalOnlyFromRoot);
     MT_RUN(testEmbeddedIgnored);
+    MT_RUN(testSingleVersionPlanIgnoresDependencies);
 }
