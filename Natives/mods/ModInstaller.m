@@ -1,4 +1,5 @@
 #import "ModInstaller.h"
+#import "ModContentKind.h"
 #import "ModFolder.h"
 #import "ModVersionSelector.h"
 
@@ -26,22 +27,34 @@ static BOOL IsPlainFileName(id _Nullable name) {
     return string.length > 0 && ![string isEqualToString:@"."] && ![string isEqualToString:@".."] && ![string containsString:@"/"];
 }
 
+/* YES for the folder's own names: the record, and anything ending in ".part", ".old" or ".disabled". */
+static BOOL IsReservedFileName(NSString *name) {
+    if ([name isEqualToString:ModIndexFileName]) return YES;
+    NSString *lower = name.lowercaseString;
+    for (NSString *reserved in @[kPartSuffix, kOldSuffix, kDisabledSuffix]) {
+        if ([lower hasSuffix:reserved]) return YES;
+    }
+    return NO;
+}
+
+/* YES when `name` ends in ".<extension>" in any case. */
+static BOOL HasFileExtension(NSString *name, NSString *extension) {
+    return [name.lowercaseString hasSuffix:[@"." stringByAppendingString:extension]];
+}
+
 /* The name a downloaded file is saved under, or nil when `name` cannot be used. It must be a plain file
-   name ending in ".jar" in any case (the folder only lists jars, so anything else would be installed but
-   never shown) and is saved with a lowercase ".jar" ("Foo.JAR" becomes "Foo.jar"). The folder's own
-   names are refused: the record, and anything ending in ".part", ".old" or ".disabled". */
-static NSString * _Nullable InstallFileName(id _Nullable name) {
+   name ending in ".<extension>" ("jar" or "zip") in any case (the folder only lists that kind of file, so
+   anything else would be installed but never shown) and is saved with a lowercase extension ("Foo.JAR"
+   becomes "Foo.jar"). The folder's own names are refused: the record, and anything ending in ".part",
+   ".old" or ".disabled". */
+static NSString * _Nullable InstallFileName(id _Nullable name, NSString *extension) {
     if (!IsPlainFileName(name)) return nil;
     NSString *string = name;
-    NSString *lower = string.lowercaseString;
-    if ([string isEqualToString:ModIndexFileName]) return nil;
-    for (NSString *reserved in @[kPartSuffix, kOldSuffix, kDisabledSuffix]) {
-        if ([lower hasSuffix:reserved]) return nil;
-    }
-    NSString *jarSuffix = @".jar";
-    if (![lower hasSuffix:jarSuffix] || string.length <= jarSuffix.length) return nil;
-    if (![string hasSuffix:jarSuffix]) {
-        string = [[string substringToIndex:string.length - jarSuffix.length] stringByAppendingString:jarSuffix];
+    if (IsReservedFileName(string)) return nil;
+    NSString *suffix = [@"." stringByAppendingString:extension];
+    if (!HasFileExtension(string, extension) || string.length <= suffix.length) return nil;
+    if (![string hasSuffix:suffix]) {
+        string = [[string substringToIndex:string.length - suffix.length] stringByAppendingString:suffix];
     }
     return string;
 }
@@ -89,6 +102,7 @@ static NSError *InstallError(ModInstallError code, NSString * _Nullable fileName
 @interface ModInstaller ()
 @property(nonatomic, strong) ModIndex *index;
 @property(nonatomic, copy) ModDownloader downloader;
+@property(nonatomic, strong) ModContentKind *kind;
 @end
 
 @implementation ModInstaller
@@ -134,11 +148,16 @@ static NSError *InstallError(ModInstallError code, NSString * _Nullable fileName
     };
 }
 
-- (instancetype)initWithIndex:(ModIndex *)index downloader:(ModDownloader)downloader {
+- (instancetype)initWithIndex:(ModIndex *)index downloader:(ModDownloader)downloader kind:(ModContentKind *)kind {
     self = [super init];
     _index = index;
     _downloader = [downloader copy];
+    _kind = kind;
     return self;
+}
+
+- (instancetype)initWithIndex:(ModIndex *)index downloader:(ModDownloader)downloader {
+    return [self initWithIndex:index downloader:downloader kind:ModContentKind.mods];
 }
 
 #pragma mark Install
@@ -171,9 +190,16 @@ static NSError *InstallError(ModInstallError code, NSString * _Nullable fileName
             return nil;
         }
         id publishedName = file[@"filename"];
-        NSString *fileName = InstallFileName(publishedName);
+        NSString *extension = self.kind.fileExtension;
+        NSString *fileName = InstallFileName(publishedName, extension);
         if (!fileName) {
-            *error = InstallError(ModInstallErrorFileSystem, NonEmptyString(publishedName), @"The mod does not have a valid file name.", nil);
+            NSString *published = NonEmptyString(publishedName);
+            BOOL wrongExtension = published && IsPlainFileName(published) && !IsReservedFileName(published)
+                && !HasFileExtension(published, extension);
+            NSString *message = wrongExtension
+                ? [NSString stringWithFormat:@"%@ is not a .%@ file.", published, extension]
+                : @"The mod does not have a valid file name.";
+            *error = InstallError(ModInstallErrorFileSystem, published, message, nil);
             return nil;
         }
         NSString *urlString = NonEmptyString(file[@"url"]);

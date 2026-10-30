@@ -41,6 +41,19 @@ static NSError *MissingDependencyError(NSString *projectId) {
 @implementation ModInstallPlan
 @end
 
+@implementation ModInstallPlan (Single)
+
++ (instancetype)planForSingleVersion:(NSDictionary *)version {
+    ModInstallPlan *plan = [self new];
+    plan.versionsToInstall = @[version];
+    plan.projectIdsToEnable = @[];
+    plan.incompatibleInstalledProjectIds = @[];
+    plan.optionalProjectIds = @[];
+    return plan;
+}
+
+@end
+
 #pragma mark - ModDependencyResolver
 
 @interface ModDependencyResolver ()

@@ -29,6 +29,12 @@ typedef NSDictionary * _Nullable (^ModFetchVersion)(NSString *versionId);
 @property(nonatomic, copy) NSArray<NSString *> *optionalProjectIds;
 @end
 
+@interface ModInstallPlan (Single)
+/* versionsToInstall = @[version]; every other list empty. For kinds that don't resolve dependencies
+   (resource packs and shader packs). */
++ (instancetype)planForSingleVersion:(NSDictionary *)version;
+@end
+
 /* Works out what to install for a chosen Modrinth version: its required dependencies (recursively),
    which installed-but-disabled mods to switch back on, and which installed mods conflict.
    Fetching is injected as synchronous blocks, so there is no network or threading in here and it can be

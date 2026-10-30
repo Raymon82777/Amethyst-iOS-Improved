@@ -481,6 +481,94 @@ static void testFailureAfterSwapRestoresEverything(void) {
     RemoveDir(dir);
 }
 
+/* A pack's ".ZIP" is saved and recorded as ".zip", the only kind the pack folders list. */
+static void testPackInstallLowercasesZipExtension(void) {
+    NSString *dir = MakeTempDir();
+    ModIndex *index = [[ModIndex alloc] initWithModsDir:dir];
+    NSMutableArray *log = [NSMutableArray new];
+    NSDictionary *responses = @{UrlFor(@"Faithful-32x.ZIP"): @"faithful"};
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index
+                                                       downloader:FakeDownloader(responses, log, NO)
+                                                             kind:ModContentKind.resourcePacks];
+
+    NSError *error = RunInstall(installer, [ModInstallPlan planForSingleVersion:Version(@"F", @"f1", @"Faithful-32x.ZIP", @"faithful")], @{});
+    MT_EQUAL(error, nil);
+    MT_EQUAL(log, (@[UrlFor(@"Faithful-32x.ZIP")]));
+    MT_EQUAL(Listing(dir), (@[ModIndexFileName, @"Faithful-32x.zip"]));
+    MT_EQUAL(ReadFile(dir, @"Faithful-32x.zip"), @"faithful");
+    MT_EQUAL(index.entries.allKeys, (@[@"Faithful-32x.zip"]));
+    MT_EQUAL(index.entries[@"Faithful-32x.zip"][@"projectId"], @"F");
+    AssertNoLeftovers(dir);
+
+    ModIndex *saved = [[ModIndex alloc] initWithModsDir:dir];
+    MT_EQUAL(saved.entries.allKeys, (@[@"Faithful-32x.zip"]));
+    RemoveDir(dir);
+}
+
+/* A pack kind refuses a jar before anything is downloaded, and says so by name. */
+static void testPackInstallRefusesNonZipFile(void) {
+    NSString *dir = MakeTempDir();
+    WriteFile(dir, @"keep.zip", @"keep");
+    NSArray *before = Listing(dir);
+    ModIndex *index = [[ModIndex alloc] initWithModsDir:dir];
+    NSMutableArray *log = [NSMutableArray new];
+    NSDictionary *responses = @{UrlFor(@"pack.jar"): @"jar bytes"};
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index
+                                                       downloader:FakeDownloader(responses, log, NO)
+                                                             kind:ModContentKind.resourcePacks];
+
+    NSError *error = RunInstall(installer, [ModInstallPlan planForSingleVersion:Version(@"P", @"p1", @"pack.jar", @"jar bytes")], @{});
+    MT_EQUAL(error.domain, ModInstallErrorDomain);
+    MT_EQUAL(@(error.code), @(ModInstallErrorFileSystem));
+    MT_EQUAL(error.userInfo[@"fileName"], @"pack.jar");
+    MT_EQUAL(error.localizedDescription, @"pack.jar is not a .zip file.");
+    MT_EQUAL(@(log.count), @0);
+    MT_EQUAL(Listing(dir), before);
+    MT_EQUAL(@(index.entries.count), @0);
+    RemoveDir(dir);
+}
+
+/* An update takes the new file name and drops the old one, keeping a disabled pack disabled. */
+static void testPackUpdateTakesNewFileName(void) {
+    NSDictionary *responses = @{UrlFor(@"new-v2.zip"): @"v2"};
+    NSDictionary *version = Version(@"P", @"p2", @"new-v2.zip", @"v2");
+
+    // Enabled pack.
+    NSString *dir = MakeTempDir();
+    WriteFile(dir, @"old-v1.zip", @"v1");
+    SeedIndex(dir, @"old-v1.zip", @"P");
+    ModIndex *index = [[ModIndex alloc] initWithModsDir:dir];
+    ModInstaller *installer = [[ModInstaller alloc] initWithIndex:index
+                                                       downloader:FakeDownloader(responses, [NSMutableArray new], NO)
+                                                             kind:ModContentKind.shaderPacks];
+    NSError *error = RunInstall(installer, [ModInstallPlan planForSingleVersion:version], @{});
+    MT_EQUAL(error, nil);
+    MT_EQUAL(Listing(dir), (@[ModIndexFileName, @"new-v2.zip"]));
+    MT_EQUAL(ReadFile(dir, @"new-v2.zip"), @"v2");
+    MT_EQUAL(index.entries.allKeys, (@[@"new-v2.zip"]));
+    MT_EQUAL(index.entries[@"new-v2.zip"][@"versionId"], @"p2");
+    AssertNoLeftovers(dir);
+    ModIndex *saved = [[ModIndex alloc] initWithModsDir:dir];
+    MT_EQUAL(saved.entries.allKeys, (@[@"new-v2.zip"]));
+    RemoveDir(dir);
+
+    // Disabled pack.
+    dir = MakeTempDir();
+    WriteFile(dir, @"old-v1.zip.disabled", @"v1");
+    SeedIndex(dir, @"old-v1.zip", @"P");
+    index = [[ModIndex alloc] initWithModsDir:dir];
+    installer = [[ModInstaller alloc] initWithIndex:index
+                                         downloader:FakeDownloader(responses, [NSMutableArray new], NO)
+                                               kind:ModContentKind.shaderPacks];
+    error = RunInstall(installer, [ModInstallPlan planForSingleVersion:version], @{});
+    MT_EQUAL(error, nil);
+    MT_EQUAL(Listing(dir), (@[ModIndexFileName, @"new-v2.zip.disabled"]));
+    MT_EQUAL(ReadFile(dir, @"new-v2.zip.disabled"), @"v2");
+    MT_EQUAL(index.entries.allKeys, (@[@"new-v2.zip"]));
+    AssertNoLeftovers(dir);
+    RemoveDir(dir);
+}
+
 static void testUserAgent(void) {
     NSString *agent = [ModInstaller userAgent];
     MT_ASSERT([agent hasPrefix:@"Amethyst-iOS/"]);
@@ -502,5 +590,8 @@ void ModInstallerTests(void) {
     MT_RUN(testNonJarAndReservedNamesAreRefused);
     MT_RUN(testUppercaseJarIsSavedLowercase);
     MT_RUN(testFailureAfterSwapRestoresEverything);
+    MT_RUN(testPackInstallLowercasesZipExtension);
+    MT_RUN(testPackInstallRefusesNonZipFile);
+    MT_RUN(testPackUpdateTakesNewFileName);
     MT_RUN(testUserAgent);
 }

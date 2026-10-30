@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "ModContentKind.h"
 #import "ModDependencyResolver.h"
 #import "ModIndex.h"
 
@@ -37,6 +38,10 @@ typedef void (^ModDownloader)(NSURL *url, NSString *destPath, ModDownloadComplet
    moves the downloaded file to `destPath`. */
 + (ModDownloader)defaultDownloader;
 
+/* `kind` decides the extension every installed file must have (".jar" for mods, ".zip" for resource and
+   shader packs). The folder installed into is always `index.modsDir`. */
+- (instancetype)initWithIndex:(ModIndex *)index downloader:(ModDownloader)downloader kind:(ModContentKind *)kind;
+/* Installs mods (kind = ModContentKind.mods). */
 - (instancetype)initWithIndex:(ModIndex *)index downloader:(ModDownloader)downloader;
 
 /* `projects` maps a project id to its Modrinth project object (for title, slug and icon); a missing
@@ -44,9 +49,10 @@ typedef void (^ModDownloader)(NSURL *url, NSString *destPath, ModDownloadComplet
    file already recorded for the same project, and switches `plan.projectIdsToEnable` back on.
    A replaced mod that was disabled stays disabled. A file that already has the downloaded name is
    treated as the file being replaced, whether or not it was recorded.
-   Every file name must end in ".jar" (any case; it is saved and recorded with a lowercase ".jar") and
-   must not be one of the folder's own names (the record, "*.part", "*.old", "*.disabled"); otherwise
-   the install fails with ModInstallErrorFileSystem before anything is downloaded or touched.
+   Every file name must end in the kind's extension, ".jar" or ".zip" (any case; it is saved and recorded
+   with it in lowercase) and must not be one of the folder's own names (the record, "*.part", "*.old",
+   "*.disabled"); otherwise the install fails with ModInstallErrorFileSystem before anything is downloaded
+   or touched. A name with the wrong extension gets the message "<name> is not a .<ext> file.".
    `completion` is called exactly once, on an arbitrary queue; nil error means the whole plan is in.
    If saving the record fails after the files are in place, the files stay installed and the error is
    ModInstallErrorFileSystem for the record file. */
