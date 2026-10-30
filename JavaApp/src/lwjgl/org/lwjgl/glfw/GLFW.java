@@ -15,6 +15,7 @@ import javax.annotation.*;
 import net.kdt.pojavlaunch.Tools;
 
 import org.lwjgl.*;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.system.*;
 import org.lwjgl.system.macosx.*;
 
@@ -1005,6 +1006,7 @@ public class GLFW
     public static long glfwCreateWindow(int width, int height, CharSequence title, long monitor, long share) {
         // Create an ACTUAL EGL context
         long ptr = nglfwCreateContext(share);
+        rebindGLToRenderer();
         //nativeEglMakeCurrent(ptr);
         GLFWWindowProperties win = new GLFWWindowProperties();
         // win.width = width;
@@ -1021,6 +1023,23 @@ public class GLFW
         mainContext = ptr;
         return ptr;
         //Return our context
+    }
+
+    // Minecraft 26.2+ binds OpenGL during startup, before the window hints let the "auto" renderer
+    // pick the real GL library. Once the context is created the choice is final, so rebind if needed.
+    private static void rebindGLToRenderer() {
+        String libName = System.getProperty("org.lwjgl.opengl.libname");
+        FunctionProvider provider = GL.getFunctionProvider();
+        if (libName == null || !(provider instanceof SharedLibrary)) return;
+
+        String boundName = ((SharedLibrary) provider).getName();
+        String boundFile = boundName.substring(boundName.lastIndexOf('/') + 1);
+        String wantedFile = libName.substring(libName.lastIndexOf('/') + 1);
+        if (!boundFile.equals(wantedFile)) {
+            System.out.println("GLFW: Rebinding OpenGL from " + boundFile + " to " + wantedFile);
+            GL.destroy();
+            GL.create();
+        }
     }
 
     public static void glfwDestroyWindow(long window) {
@@ -1120,7 +1139,8 @@ public class GLFW
     public static void glfwPostEmptyEvent() {}
 
     public static int glfwGetInputMode(@NativeType("GLFWwindow *") long window, int mode) {
-        return internalGetWindow(window).inputModes.get(mode);
+        // Unset modes (e.g. GLFW 3.4 GLFW_IME) report GLFW's defaults
+        return internalGetWindow(window).inputModes.getOrDefault(mode, mode == GLFW_CURSOR ? GLFW_CURSOR_NORMAL : GLFW_FALSE);
     }
 
     public static void glfwSetInputMode(@NativeType("GLFWwindow *") long window, int mode, int value) {
