@@ -9,6 +9,7 @@ void ModVersionSelectorTests(void);
 void ModFolderTests(void);
 void ModDependencyResolverTests(void);
 void ModInstallerTests(void);
+void ModContentKindTests(void);
 
 int main(void) {
     @autoreleasepool {
@@ -18,6 +19,7 @@ int main(void) {
         ModFolderTests();
         ModDependencyResolverTests();
         ModInstallerTests();
+        ModContentKindTests();
     }
     if (gModTestFailures > 0) {
         fprintf(stderr, "%d assertion(s) failed\n", gModTestFailures);
