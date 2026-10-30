@@ -71,6 +71,8 @@ jobs:
           mkdir -p "$OUT/Natives/resources/Frameworks" "$OUT/Natives/external/mesa"
           cp "$BIN" "$OUT/Natives/resources/Frameworks/libMoltenVK.dylib"
           cp -RL "$PKG/include/MoltenVK" "$PKG/include/vulkan" "$PKG/include/vk_video" "$OUT/Natives/external/mesa/"
+          # C headers only; the Vulkan-Hpp C++ headers are ~20 MB and unused here
+          rm -f "$OUT"/Natives/external/mesa/vulkan/*.hpp "$OUT"/Natives/external/mesa/vulkan/*.cppm
           DYLIB="$OUT/Natives/resources/Frameworks/libMoltenVK.dylib"
           {
             echo "ref: $MOLTENVK_REF"
