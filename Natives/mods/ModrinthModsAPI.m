@@ -53,7 +53,16 @@ static NSArray<NSString *> *UniqueStrings(NSArray<NSString *> *strings) {
                                        loaders:(NSArray<NSString *> *)loaders
                                    gameVersion:(NSString *)mc
                                       previous:(NSMutableArray *)previous {
-    NSMutableArray *facets = [NSMutableArray arrayWithObject:@[@"project_type:mod"]];
+    return [self searchProjects:query kind:ModContentKind.mods profileLoaders:loaders gameVersion:mc previous:previous];
+}
+
+- (NSMutableArray<NSDictionary *> *)searchProjects:(NSString *)query
+                                              kind:(ModContentKind *)kind
+                                    profileLoaders:(NSArray<NSString *> *)profileLoaders
+                                       gameVersion:(NSString *)mc
+                                          previous:(NSMutableArray *)previous {
+    NSMutableArray *facets = [NSMutableArray arrayWithObject:@[[@"project_type:" stringByAppendingString:kind.projectType]]];
+    NSArray<NSString *> *loaders = [kind searchCategoriesForProfileLoaders:profileLoaders];
     if (loaders.count > 0) {
         NSMutableArray *categories = [NSMutableArray new];
         for (NSString *loader in loaders) {
@@ -64,7 +73,9 @@ static NSArray<NSString *> *UniqueStrings(NSArray<NSString *> *strings) {
     if (mc.length > 0) {
         [facets addObject:@[[@"versions:" stringByAppendingString:mc]]];
     }
-    [facets addObject:@[@"client_side:required", @"client_side:optional"]];
+    if (kind.isMods) {
+        [facets addObject:@[@"client_side:required", @"client_side:optional"]];
+    }
 
     BOOL hasQuery = query.length > 0;
     NSMutableDictionary *params = [@{
