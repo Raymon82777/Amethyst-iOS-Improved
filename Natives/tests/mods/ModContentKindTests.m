@@ -3,8 +3,8 @@
 
 static void testModsKindKeepsProfileLoaders(void) {
     ModContentKind *kind = ModContentKind.mods;
-    MT_EQUAL([kind loadersForProfileLoaders:@[@"quilt", @"fabric"]], (@[@"quilt", @"fabric"]));
-    MT_EQUAL([kind searchCategoriesForProfileLoaders:@[@"quilt", @"fabric"]], (@[@"quilt", @"fabric"]));
+    MT_EQUAL([kind loadersForProfileLoaders:(@[@"quilt", @"fabric"])], (@[@"quilt", @"fabric"]));
+    MT_EQUAL([kind searchCategoriesForProfileLoaders:(@[@"quilt", @"fabric"])], (@[@"quilt", @"fabric"]));
     MT_ASSERT(kind.type == ModContentTypeMods);
     MT_EQUAL(kind.folderName, @"mods");
     MT_EQUAL(kind.fileExtension, @"jar");
