@@ -1,4 +1,5 @@
 #import <CommonCrypto/CommonDigest.h>
+#import "ModContentKind.h"
 #import "ModFolder.h"
 #import "ModIndex.h"
 #import "ModTest.h"
@@ -245,6 +246,150 @@ static void testImportKeepBothName(void) {
     RemoveDir(sourceDir);
 }
 
+static void MakeDir(NSString *dir, NSString *name) {
+    [NSFileManager.defaultManager createDirectoryAtPath:[dir stringByAppendingPathComponent:name] withIntermediateDirectories:NO attributes:nil error:nil];
+}
+
+/* A folder with a mix of pack files, a mod file, junk, a stray .part, folders and the record file. */
+static NSString *MakePackDir(void) {
+    NSString *dir = MakeTempDir();
+    WriteFile(dir, @"a.zip", @"a");
+    WriteFile(dir, @"b.zip.disabled", @"b");
+    WriteFile(dir, @"c.jar", @"c");
+    WriteFile(dir, @"README.txt", @"r");
+    WriteFile(dir, @".DS_Store", @"d");
+    WriteFile(dir, @"x.zip.part", @"partial");
+    WriteFile(dir, ModIndexFileName, @"{}");
+    MakeDir(dir, @"Faithful");
+    MakeDir(dir, @".hidden");
+    return dir;
+}
+
+static void testPackScanListsZipsAndFoldersOnly(void) {
+    NSString *dir = MakePackDir();
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir kind:ModContentKind.resourcePacks];
+    MT_ASSERT(folder.kind == ModContentKind.resourcePacks);
+    NSArray<ModJar *> *items = [folder scanJars];
+    MT_EQUAL(@(items.count), @3);
+    if (items.count == 3) {
+        MT_EQUAL(items[0].fileName, @"a.zip");
+        MT_ASSERT(items[0].enabled);
+        MT_ASSERT(!items[0].isDirectory);
+        MT_EQUAL(items[0].path, [dir stringByAppendingPathComponent:@"a.zip"]);
+        MT_EQUAL(items[1].fileName, @"b.zip");
+        MT_ASSERT(!items[1].enabled);
+        MT_ASSERT(!items[1].isDirectory);
+        MT_EQUAL(items[1].path, [dir stringByAppendingPathComponent:@"b.zip.disabled"]);
+        MT_EQUAL(items[2].fileName, @"Faithful");
+        MT_ASSERT(items[2].enabled);
+        MT_ASSERT(items[2].isDirectory);
+        MT_EQUAL(items[2].path, [dir stringByAppendingPathComponent:@"Faithful"]);
+    }
+    MT_ASSERT(!Exists(dir, @"x.zip.part"));
+    MT_ASSERT(Exists(dir, @"c.jar"));
+    RemoveDir(dir);
+}
+
+static void testModScanUnchangedIgnoresFoldersAndZips(void) {
+    NSString *dir = MakePackDir();
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir];
+    MT_ASSERT(folder.kind == ModContentKind.mods);
+    NSArray<ModJar *> *jars = [folder scanJars];
+    MT_EQUAL(@(jars.count), @1);
+    if (jars.count == 1) {
+        MT_EQUAL(jars[0].fileName, @"c.jar");
+        MT_ASSERT(!jars[0].isDirectory);
+    }
+    RemoveDir(dir);
+}
+
+static void testCountItemsDoesNotCreateOrDelete(void) {
+    NSString *root = MakeTempDir();
+    NSString *missing = [root stringByAppendingPathComponent:@"resourcepacks"];
+    MT_EQUAL(@([ModFolder countItemsInDir:missing kind:ModContentKind.resourcePacks]), @0);
+    MT_ASSERT(![NSFileManager.defaultManager fileExistsAtPath:missing]);
+    RemoveDir(root);
+
+    NSString *dir = MakePackDir();
+    MT_EQUAL(@([ModFolder countItemsInDir:dir kind:ModContentKind.resourcePacks]), @3);
+    MT_EQUAL(@([ModFolder countItemsInDir:dir kind:ModContentKind.mods]), @1);
+    MT_ASSERT(Exists(dir, @"x.zip.part"));
+    RemoveDir(dir);
+}
+
+static void testPackImportRequiresZip(void) {
+    NSString *dir = MakeTempDir();
+    NSString *sourceDir = MakeTempDir();
+    WriteFile(sourceDir, @"pack.jar", @"jar");
+    WriteFile(sourceDir, @"pack.zip", @"zip");
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir kind:ModContentKind.resourcePacks];
+
+    NSError *error = nil;
+    NSURL *jarSource = [NSURL fileURLWithPath:[sourceDir stringByAppendingPathComponent:@"pack.jar"]];
+    MT_EQUAL([folder importJarFromURL:jarSource asFileName:nil replaceExisting:NO error:&error], nil);
+    MT_ASSERT(error != nil);
+    MT_ASSERT(!Exists(dir, @"pack.jar"));
+    MT_ASSERT(!Exists(dir, @"pack.jar.part"));
+    MT_EQUAL(@([[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] count]), @0);
+
+    error = nil;
+    NSURL *zipSource = [NSURL fileURLWithPath:[sourceDir stringByAppendingPathComponent:@"pack.zip"]];
+    MT_EQUAL([folder importJarFromURL:zipSource asFileName:nil replaceExisting:NO error:&error], @"pack.zip");
+    MT_EQUAL(error, nil);
+    MT_EQUAL(ReadFile(dir, @"pack.zip"), @"zip");
+
+    // The check applies to an explicit name too.
+    error = nil;
+    MT_EQUAL([folder importJarFromURL:zipSource asFileName:@"renamed.jar" replaceExisting:NO error:&error], nil);
+    MT_ASSERT(error != nil);
+    MT_ASSERT(!Exists(dir, @"renamed.jar"));
+    RemoveDir(dir);
+    RemoveDir(sourceDir);
+}
+
+static void testPackUniqueFileNameKeepsZipExtension(void) {
+    NSString *dir = MakeTempDir();
+    WriteFile(dir, @"pack.zip", @"old");
+    WriteFile(dir, @"pack (2).zip.disabled", @"old2");
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir kind:ModContentKind.shaderPacks];
+    MT_EQUAL([folder uniqueFileNameFor:@"pack.zip"], @"pack (3).zip");
+    MT_EQUAL([folder uniqueFileNameFor:@"other.zip"], @"other.zip");
+    RemoveDir(dir);
+}
+
+static void testFolderPackCannotBeSwitched(void) {
+    NSString *dir = MakeTempDir();
+    MakeDir(dir, @"Faithful");
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir kind:ModContentKind.resourcePacks];
+    ModJar *pack = [folder scanJars].firstObject;
+    MT_ASSERT(pack.isDirectory);
+
+    NSError *error = nil;
+    MT_ASSERT(![folder setJar:pack enabled:NO error:&error]);
+    MT_EQUAL(error.domain, ModFolderErrorDomain);
+    MT_EQUAL(@(error.code), @(ModFolderErrorExists));
+    MT_ASSERT(pack.enabled);
+    MT_ASSERT(Exists(dir, @"Faithful"));
+    MT_ASSERT(!Exists(dir, @"Faithful.disabled"));
+    RemoveDir(dir);
+}
+
+static void testDeleteFolderPack(void) {
+    NSString *dir = MakeTempDir();
+    MakeDir(dir, @"Faithful");
+    WriteFile([dir stringByAppendingPathComponent:@"Faithful"], @"pack.mcmeta", @"{}");
+    ModFolder *folder = [[ModFolder alloc] initWithModsDir:dir kind:ModContentKind.resourcePacks];
+    ModJar *pack = [folder scanJars].firstObject;
+    MT_EQUAL(pack.fileName, @"Faithful");
+    MT_ASSERT(pack.isDirectory);
+
+    NSError *error = nil;
+    MT_ASSERT([folder deleteJar:pack error:&error]);
+    MT_ASSERT(!Exists(dir, @"Faithful"));
+    MT_EQUAL(@([folder scanJars].count), @0);
+    RemoveDir(dir);
+}
+
 static void testSha1KnownValue(void) {
     NSString *dir = MakeTempDir();
     WriteFile(dir, @"abc.jar", @"abc");
@@ -392,6 +537,13 @@ void ModFolderTests(void) {
     MT_RUN(testImportAsFileName);
     MT_RUN(testImportRejectsPathSpecialNames);
     MT_RUN(testImportKeepBothName);
+    MT_RUN(testPackScanListsZipsAndFoldersOnly);
+    MT_RUN(testModScanUnchangedIgnoresFoldersAndZips);
+    MT_RUN(testCountItemsDoesNotCreateOrDelete);
+    MT_RUN(testPackImportRequiresZip);
+    MT_RUN(testPackUniqueFileNameKeepsZipExtension);
+    MT_RUN(testFolderPackCannotBeSwitched);
+    MT_RUN(testDeleteFolderPack);
     MT_RUN(testSha1KnownValue);
     MT_RUN(testHashSpansMultipleChunks);
     MT_RUN(testIsSharedGameDir);
