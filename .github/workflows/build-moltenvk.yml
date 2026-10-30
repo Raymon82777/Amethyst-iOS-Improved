@@ -1,0 +1,95 @@
+name: Build MoltenVK
+
+# Builds the libMoltenVK.dylib that is checked in at
+# Natives/resources/Frameworks/libMoltenVK.dylib, plus the headers under
+# Natives/external/mesa/{MoltenVK,vulkan,vk_video}.
+#
+# KhronosGroup's release tarballs ship an iOS build without Metal private API
+# (only macOS gets a -privateapi variant), but the bundled MoltenVK has always
+# been built with MVK_USE_METAL_PRIVATE_API=1 (wideLines, logicOp,
+# samplerMipLodBias, native sample masks...), which Zink relies on. So build the
+# official tag from source with that flag on.
+#
+# Runs when this file changes or by hand. Download the "MoltenVK-ios-privateapi"
+# artifact and copy its contents into the repo to update the bundled MoltenVK.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-moltenvk.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'KhronosGroup/MoltenVK tag or commit'
+        required: true
+        default: 'v1.4.2'
+
+env:
+  MOLTENVK_REF: ${{ inputs.ref || 'v1.4.2' }}
+
+jobs:
+  build:
+    name: MoltenVK (iOS, private API)
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout MoltenVK
+        uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/MoltenVK
+          ref: ${{ env.MOLTENVK_REF }}
+          path: MoltenVK
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch dependencies
+        working-directory: MoltenVK
+        run: ./fetchDependencies -v --ios
+
+      - name: Output dependency build log on failure
+        if: failure()
+        run: cat MoltenVK/dependenciesbuild.log || true
+
+      - name: Build MoltenVK
+        working-directory: MoltenVK
+        run: |
+          xcodebuild -version
+          make ios MVK_USE_METAL_PRIVATE_API=1
+
+      - name: Output MoltenVK build log on failure
+        if: failure()
+        run: cat MoltenVK/xcodebuild.log || true
+
+      - name: Collect dylib and headers
+        run: |
+          set -e
+          PKG=MoltenVK/Package/Release/MoltenVK
+          BIN="$PKG/dynamic/MoltenVK.xcframework/ios-arm64/MoltenVK.framework/MoltenVK"
+          OUT=out
+          mkdir -p "$OUT/Natives/resources/Frameworks" "$OUT/Natives/external/mesa"
+          cp "$BIN" "$OUT/Natives/resources/Frameworks/libMoltenVK.dylib"
+          cp -RL "$PKG/include/MoltenVK" "$PKG/include/vulkan" "$PKG/include/vk_video" "$OUT/Natives/external/mesa/"
+          DYLIB="$OUT/Natives/resources/Frameworks/libMoltenVK.dylib"
+          {
+            echo "ref: $MOLTENVK_REF"
+            echo "commit: $(git -C MoltenVK rev-parse HEAD)"
+            echo "flags: MVK_USE_METAL_PRIVATE_API=1"
+            xcodebuild -version
+            echo
+            lipo -info "$DYLIB"
+            otool -L "$DYLIB"
+            otool -l "$DYLIB" | grep -A4 LC_BUILD_VERSION
+            grep -E '#define (MVK_VERSION_(MAJOR|MINOR|PATCH)|VK_HEADER_VERSION) ' \
+              "$PKG/include/MoltenVK/mvk_private_api.h" "$PKG/include/vulkan/vulkan_core.h"
+            echo
+            echo "exported vk* symbols: $(nm -gU "$DYLIB" | grep -c ' _vk')"
+          } | tee "$OUT/BUILD_INFO.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoltenVK-ios-privateapi
+          path: out/
+          if-no-files-found: error
