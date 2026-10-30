@@ -110,6 +110,12 @@ AME_JRE17_DIR       ?= $(SOURCEDIR)/depends/java-17-openjdk
 AME_JRE21_DIR       ?= $(SOURCEDIR)/depends/java-21-openjdk
 AME_JRE25_DIR       ?= $(SOURCEDIR)/depends/java-25-openjdk
 
+# Java 25 runtime download. Built from AngelAuraMC/angelauramc-openjdk-build with the
+# UpcallStub mirror-mapping fix (angelauramc-openjdk-build#17), which stops java.lang.foreign
+# upcalls (e.g. Controlify on 26.2) crashing the JVM on iOS 26+. Switch back to
+# https://assets.angelauramc.dev/openjdk/ios-arm64/jre25-ios-aarch64.zip once that has the fix.
+JRE25_URL           ?= https://github.com/Raymon82777/angelauramc-openjdk-build/releases/download/jre25-ios-upcallstub-20261030/jre25-ios-aarch64.zip
+
 # Function to use later for checking dependencies
 METHOD_DEPCHECK   = $(shell $(1) >/dev/null 2>&1 && echo 1)
 
@@ -297,7 +303,7 @@ jre: native
 	$(call METHOD_JAVA_UNPACK,8,'https://assets.angelauramc.dev/openjdk/ios-arm64/jre8-ios-aarch64.zip'); \
 	$(call METHOD_JAVA_UNPACK,17,'https://assets.angelauramc.dev/openjdk/ios-arm64/jre17-ios-aarch64.zip'); \
 	$(call METHOD_JAVA_UNPACK,21,'https://assets.angelauramc.dev/openjdk/ios-arm64/jre21-ios-aarch64.zip'); \
-	$(call METHOD_JAVA_UNPACK,25,'https://assets.angelauramc.dev/openjdk/ios-arm64/jre25-ios-aarch64.zip'); \
+	$(call METHOD_JAVA_UNPACK,25,'$(JRE25_URL)'); \
 	if [ -f "$(ls jre*.tar.xz)" ]; then rm $(SOURCEDIR)/depends/jre*.tar.xz; fi; \
 	cd $(SOURCEDIR); \
 	rm -rf $(SOURCEDIR)/depends/java-*-openjdk/{ASSEMBLY_EXCEPTION,bin,include,jre,legal,LICENSE,man,THIRD_PARTY_README,lib/{ct.sym,jspawnhelper,libjsig.dylib,src.zip,tools.jar}}; \
