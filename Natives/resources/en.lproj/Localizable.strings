@@ -279,6 +279,8 @@
 "preference.profile.title.default_touch_control" = "Touch controls";
 "preference.profile.title.default_gamepad_control" = "Gamepad controls";
 "preference.profile.title.mods" = "Mods";
+"preference.profile.title.resourcepacks" = "Resource Packs";
+"preference.profile.title.shaderpacks" = "Shader Packs";
 
 "profile.error.name_exists" = "A profile with that name already exists. Please use another name.";
 "profile.section.instance" = "Game Instance settings";
