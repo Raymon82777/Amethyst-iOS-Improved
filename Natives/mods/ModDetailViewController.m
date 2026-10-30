@@ -222,8 +222,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     _mods = mods;
     _projectId = [projectId copy];
     _projectInfo = [hit copy] ?: @{};
-    _flow = [[ModInstallFlow alloc] initWithLoaders:mods.info.acceptedLoaders gameVersion:mods.info.minecraftVersion ?: @""
-        profileName:mods.info.displayName fetchCache:[ModFetchCache new]];
+    _flow = [[ModInstallFlow alloc] initWithKind:mods.kind loaders:mods.loaders gameVersion:mods.gameVersion
+        profileName:mods.profileDisplayName fetchCache:[ModFetchCache new]];
     _compatibleVersions = @[];
     _titles = [NSMutableDictionary new];
     _sections = @[];
@@ -307,8 +307,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
 
     NSString *projectId = self.projectId;
     BOOL needsProject = StringOrNil(self.projectInfo[@"title"]) == nil;
-    NSArray<NSString *> *loaders = self.mods.info.acceptedLoaders;
-    NSString *mc = self.mods.info.minecraftVersion ?: @"";
+    NSArray<NSString *> *loaders = self.mods.loaders;
+    NSString *mc = self.mods.gameVersion;
     __weak ModDetailViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Its own client, so it never races the Mods screen's requests.
@@ -391,11 +391,12 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     }
 }
 
-/* Works out what installing the best version would bring in, for the lines under the button. */
+/* Works out what installing the best version would bring in, for the lines under the button. Mods only:
+   packs have no dependencies, so their plan is always the version alone and shows no lines. */
 - (void)startDryRunIfNeeded {
     ModInstalledState *state = self.installed;
     NSDictionary *version = self.bestVersion;
-    if (!state || !version || self.dryRunInstalled == state) {
+    if (!self.mods.kind.isMods || !state || !version || self.dryRunInstalled == state) {
         return;
     }
     self.dryRunInstalled = state;
@@ -405,9 +406,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     __weak ModDetailViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ModrinthModsAPI *api = [ModrinthModsAPI new];
-        ModDependencyResolver *resolver = [flow resolverWithInstalledProjects:state.enabledByProject api:api];
         NSError *error;
-        ModInstallPlan *plan = [resolver planForVersion:version error:&error];
+        ModInstallPlan *plan = [flow planForVersion:version installedProjects:state.enabledByProject api:api error:&error];
 
         NSMutableArray<NSString *> *ids = [NSMutableArray new];
         if (plan) {
@@ -455,6 +455,11 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     return [titles componentsJoinedByString:@", "];
 }
 
+/* Why this mod may not work on iOS, or nil. The warning list is about mods only. */
+- (nullable NSString *)iosWarning {
+    return self.mods.kind.isMods ? ModIOSWarningForProject(self.projectId) : nil;
+}
+
 /* The lines under the Install button. */
 - (NSArray<ModDetailRow *> *)noteRows {
     NSMutableArray<ModDetailRow *> *rows = [NSMutableArray new];
@@ -464,17 +469,18 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
         [rows addObject:row];
     };
 
-    NSString *warning = ModIOSWarningForProject(self.projectId);
+    NSString *warning = [self iosWarning];
     if (warning) {
         add([NSString stringWithFormat:localize(@"mods.detail.ios_warning", nil), warning], UIColor.systemOrangeColor);
     }
-    if (!self.bestVersion) {
+    // Packs have no dependency lines.
+    if (!self.bestVersion || !self.mods.kind.isMods) {
         return rows;
     }
     if (ModIsMissingDependency(self.dryRunError)) {
         NSString *missing = StringOrNil(self.dryRunError.userInfo[@"projectId"]) ?: @"?";
         add([NSString stringWithFormat:localize(@"mods.error.missing_dependency", nil),
-            [self titleOfProject:missing], self.mods.info.displayName], UIColor.systemRedColor);
+            [self titleOfProject:missing], self.mods.profileDisplayName], UIColor.systemRedColor);
         return rows;
     }
     ModInstallPlan *plan = self.dryRunPlan;
@@ -552,7 +558,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
         [install addObject:row];
     } else if (!self.bestVersion) {
         [install addObject:[ModDetailRow rowOfKind:ModDetailRowStatus
-            text:[NSString stringWithFormat:localize(@"mods.detail.no_version", nil), self.mods.info.displayName]]];
+            text:[NSString stringWithFormat:localize([self.mods.kind stringKey:@"detail.no_version"], nil),
+                self.mods.profileDisplayName]]];
     } else {
         [install addObject:[self installRow]];
     }
@@ -572,7 +579,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
             [versions addObject:row];
         }
         [sections addObject:[ModDetailSection sectionWithTitle:
-            [NSString stringWithFormat:localize(@"mods.detail.versions", nil), self.mods.info.displayName] rows:versions]];
+            [NSString stringWithFormat:localize(@"mods.detail.versions", nil), self.mods.profileDisplayName] rows:versions]];
     }
 
     ModDetailRow *link = [ModDetailRow rowOfKind:ModDetailRowLink text:localize(@"mods.detail.view_on_modrinth", nil)];
@@ -606,7 +613,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     if (![self canStartInstall]) {
         return;
     }
-    NSString *warning = ModIOSWarningForProject(self.projectId);
+    NSString *warning = [self iosWarning];
     if (!warning) {
         [self prepareInstallOfVersion:version];
         return;
@@ -635,9 +642,8 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     __weak ModDetailViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ModrinthModsAPI *api = [ModrinthModsAPI new];
-        ModDependencyResolver *resolver = [flow resolverWithInstalledProjects:state.enabledByProject api:api];
         NSError *error;
-        ModInstallPlan *plan = [resolver planForVersion:version error:&error];
+        ModInstallPlan *plan = [flow planForVersion:version installedProjects:state.enabledByProject api:api error:&error];
         NSString *failure = plan ? nil : ModResolveErrorMessage(error, api, knownTitles, flow.profileName);
         NSArray<NSString *> *conflicts = plan.incompatibleInstalledProjectIds ?: @[];
         NSDictionary<NSString *, NSString *> *titles = ModProjectTitles(conflicts, api);
@@ -715,7 +721,9 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
     NSMutableCharacterSet *allowed = NSCharacterSet.URLPathAllowedCharacterSet.mutableCopy;
     [allowed removeCharactersInString:@"/"];
     NSString *escaped = [slug stringByAddingPercentEncodingWithAllowedCharacters:allowed] ?: slug;
-    NSURL *url = [NSURL URLWithString:[@"https://modrinth.com/mod/" stringByAppendingString:escaped]];
+    // modrinth.com/mod/…, /resourcepack/… or /shader/…: the project type is the page's path.
+    NSString *base = [NSString stringWithFormat:@"https://modrinth.com/%@/", self.mods.kind.projectType];
+    NSURL *url = [NSURL URLWithString:[base stringByAppendingString:escaped]];
     if (url) {
         [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
     }

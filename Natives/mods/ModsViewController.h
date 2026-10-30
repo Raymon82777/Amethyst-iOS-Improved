@@ -15,10 +15,29 @@ NS_ASSUME_NONNULL_BEGIN
    Threading: the screen's own jobs (reloads and its operations) run on a private serial queue, but an
    operation may run its blocking work on any queue (the detail page's installs use a global queue).
    Jobs are kept apart by `busy`, not by the queue: only one operation or reload runs at a time.
-   Results are published on the main queue. Everything below is meant to be used from the main queue. */
+   Results are published on the main queue. Everything below is meant to be used from the main queue.
+
+   The same screen manages a profile's resource packs or shader packs (see `kind`): their folder, .zip
+   files, Modrinth's pack versions for the profile's Minecraft version, no dependencies and no iOS
+   warnings. Every profile (vanilla too) gets its own folder when a pack screen opens. */
 @interface ModsViewController : UITableViewController
 
+/* The screen for `kind`'s content of the profile. */
+- (instancetype)initWithProfileName:(NSString *)profileName kind:(ModContentKind *)kind;
+
+/* The Installed Mods screen (`ModContentKind.mods`). */
 - (instancetype)initWithProfileName:(NSString *)profileName;
+
+@property(nonatomic, readonly) ModContentKind *kind;
+/* Loaders to request versions for: `[kind loadersForProfileLoaders:info.acceptedLoaders]`. */
+@property(nonatomic, readonly) NSArray<NSString *> *loaders;
+/* The profile's Minecraft version (latest-release / latest-snapshot resolved from the launcher's saved
+   latest versions), @"" when unknown. */
+@property(nonatomic, readonly) NSString *gameVersion;
+/* The profile as named in messages: mods `info.displayName` ("Fabric · 1.21.1"), packs "Minecraft 1.21.1". */
+@property(nonatomic, readonly) NSString *profileDisplayName;
+/* Browse's fixed filter: mods `info.displayName`, packs "Resource packs · 1.21.1" / "Shaders · 1.21.1". */
+@property(nonatomic, readonly) NSString *filterChipText;
 
 /* Called on the main queue after the profile was given its own game folder, so an open profile editor
    can update its copy of the profile. */
@@ -26,7 +45,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property(nonatomic, readonly) NSString *profileName;
 @property(nonatomic, readonly) ModProfileInfo *info;
-/* nil when the profile cannot have mods (vanilla, unknown Minecraft version, or no folder of its own). */
+/* nil when the profile cannot have this content (vanilla for mods, unknown Minecraft version, or no
+   folder of its own). */
 @property(nonatomic, readonly, nullable) ModIndex *index;
 @property(nonatomic, readonly, nullable) ModFolder *folder;
 @property(nonatomic, readonly) ModrinthModsAPI *api;

@@ -353,6 +353,47 @@
 "mods.error.update_failed" = "Not every mod could be updated:\n\n%@";
 "mods.error.switch_failed" = "Not every mod could be switched:\n\n%@";
 
+"packs.row.folder" = "Folder";
+"packs.profile_name" = "Minecraft %@";
+
+"resourcepacks.title" = "Resource Packs";
+"resourcepacks.chip" = "Resource packs · %@";
+"resourcepacks.header.count.one" = "1 resource pack";
+"resourcepacks.header.count.other" = "%d resource packs";
+"resourcepacks.empty.none" = "No resource packs in this profile yet. Add some with + or import .zip files with the folder button.";
+"resourcepacks.empty.unknown_version" = "Couldn't tell which Minecraft version this profile uses. Set a specific version for it in Edit profile.";
+"resourcepacks.alert.own_folder" = "This profile now has its own game folder, so its resource packs are kept apart from other profiles. Worlds, resource packs and mods in the shared folder stay where they are.";
+"resourcepacks.alert.save_first" = "Save your changes to this profile before managing its resource packs?";
+"resourcepacks.import.exists" = "A resource pack with this file name is already in this profile.";
+"resourcepacks.import.not_jar" = "Only .zip files can be added as resource packs.";
+"resourcepacks.action.add" = "Add resource packs";
+"resourcepacks.browse.title" = "Add Resource Packs";
+"resourcepacks.browse.empty" = "No resource packs found for %@.";
+"resourcepacks.detail.no_version" = "No version of this resource pack works with %@.";
+"resourcepacks.banner.mismatch.one" = "1 resource pack doesn't match Minecraft %@";
+"resourcepacks.banner.mismatch.other" = "%1$d resource packs don't match Minecraft %2$@";
+"resourcepacks.error.update_failed" = "Not every resource pack could be updated:\n\n%@";
+"resourcepacks.error.switch_failed" = "Not every resource pack could be switched:\n\n%@";
+
+"shaderpacks.title" = "Shader Packs";
+"shaderpacks.chip" = "Shaders · %@";
+"shaderpacks.header.count.one" = "1 shader pack";
+"shaderpacks.header.count.other" = "%d shader packs";
+"shaderpacks.empty.none" = "No shader packs in this profile yet. Add some with + or import .zip files with the folder button.";
+"shaderpacks.empty.unknown_version" = "Couldn't tell which Minecraft version this profile uses. Set a specific version for it in Edit profile.";
+"shaderpacks.alert.own_folder" = "This profile now has its own game folder, so its shader packs are kept apart from other profiles. Worlds, resource packs and mods in the shared folder stay where they are.";
+"shaderpacks.alert.save_first" = "Save your changes to this profile before managing its shader packs?";
+"shaderpacks.import.exists" = "A shader pack with this file name is already in this profile.";
+"shaderpacks.import.not_jar" = "Only .zip files can be added as shader packs.";
+"shaderpacks.action.add" = "Add shader packs";
+"shaderpacks.browse.title" = "Add Shader Packs";
+"shaderpacks.browse.empty" = "No shader packs found for %@.";
+"shaderpacks.detail.no_version" = "No version of this shader pack works with %@.";
+"shaderpacks.banner.mismatch.one" = "1 shader pack doesn't match Minecraft %@";
+"shaderpacks.banner.mismatch.other" = "%1$d shader packs don't match Minecraft %2$@";
+"shaderpacks.error.update_failed" = "Not every shader pack could be updated:\n\n%@";
+"shaderpacks.error.switch_failed" = "Not every shader pack could be switched:\n\n%@";
+
 "controller_configurator.title.current" = "Gamepad configuration file";
 "controller_configurator.title.type.xbox" = "Xbox";
 "controller_configurator.title.type.playstation" = "PlayStation";
