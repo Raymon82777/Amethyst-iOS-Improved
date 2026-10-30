@@ -67,6 +67,7 @@ static NSString *ResolvedGameVersion(ModProfileInfo *info, NSString * _Nullable 
 @property(nonatomic) ModJar *jar;
 @property(nonatomic, copy) NSString *fileName;
 @property(nonatomic) BOOL enabled;
+@property(nonatomic) BOOL isFolder;                        // a folder pack (copied from `jar`, safe to read on the main queue)
 @property(nonatomic, copy, nullable) NSDictionary *entry; // the record entry, nil when not identified
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy, nullable) NSString *subtitle; // the installed version (or the "Added manually" line)
@@ -454,6 +455,7 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
             // A folder pack: no record entry, so no detail page, version change or update.
             ModsRow *row = [ModsRow new];
             row.jar = jar;
+            row.isFolder = jar.isDirectory;
             row.fileName = jar.fileName;
             row.enabled = jar.enabled;
             row.title = jar.fileName;
@@ -476,6 +478,7 @@ static ModsLoadResult *LoadRows(ModFolder *folder, ModIndex *modIndex, ModrinthM
 
         ModsRow *row = [ModsRow new];
         row.jar = jar;
+        row.isFolder = jar.isDirectory;
         row.fileName = jar.fileName;
         row.enabled = jar.enabled;
         row.entry = entry;
@@ -1431,7 +1434,7 @@ static NSError * _Nullable FailureSummary(NSArray<NSString *> *lines, NSString *
     }
 
     // Folder packs cannot be switched off (renaming a folder does not hide it from the game).
-    [cell setShowsUpdate:row.update != nil showsToggle:!row.jar.isDirectory];
+    [cell setShowsUpdate:row.update != nil showsToggle:!row.isFolder];
     cell.updateButton.enabled = !self.busy;
     [cell.toggle setOn:row.enabled animated:NO];
     cell.toggle.enabled = !self.busy;

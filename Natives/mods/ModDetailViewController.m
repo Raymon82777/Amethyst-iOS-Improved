@@ -552,7 +552,7 @@ typedef NS_ENUM(NSInteger, ModDetailRowKind) {
         [install addObject:row];
     } else if (self.loadError) {
         ModDetailRow *row = [ModDetailRow rowOfKind:ModDetailRowStatus
-            text:[NSString stringWithFormat:localize(@"mods.detail.load_error", nil), self.loadError]];
+            text:[NSString stringWithFormat:localize([self.mods.kind stringKey:@"detail.load_error"], nil), self.loadError]];
         row.detail = localize(@"mods.detail.retry", nil);
         row.enabled = YES; // tap to try again
         [install addObject:row];

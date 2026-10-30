@@ -372,6 +372,7 @@
 "resourcepacks.browse.title" = "Add Resource Packs";
 "resourcepacks.browse.empty" = "No resource packs found for %@.";
 "resourcepacks.detail.no_version" = "No version of this resource pack works with %@.";
+"resourcepacks.detail.load_error" = "Couldn't load this resource pack from Modrinth: %@";
 "resourcepacks.banner.mismatch.one" = "1 resource pack doesn't match Minecraft %@";
 "resourcepacks.banner.mismatch.other" = "%1$d resource packs don't match Minecraft %2$@";
 "resourcepacks.error.update_failed" = "Not every resource pack could be updated:\n\n%@";
@@ -391,6 +392,7 @@
 "shaderpacks.browse.title" = "Add Shader Packs";
 "shaderpacks.browse.empty" = "No shader packs found for %@.";
 "shaderpacks.detail.no_version" = "No version of this shader pack works with %@.";
+"shaderpacks.detail.load_error" = "Couldn't load this shader pack from Modrinth: %@";
 "shaderpacks.banner.mismatch.one" = "1 shader pack doesn't match Minecraft %@";
 "shaderpacks.banner.mismatch.other" = "%1$d shader packs don't match Minecraft %2$@";
 "shaderpacks.error.update_failed" = "Not every shader pack could be updated:\n\n%@";

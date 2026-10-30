@@ -1,3 +1,4 @@
+#import "ModContentKind.h"
 #import "ModIndex.h"
 #import "ModTest.h"
 
@@ -112,6 +113,19 @@ static void testEntryMatches(void) {
     MT_ASSERT(![ModIndex entry:@{@"gameVersions": @[@"1.21.1"]} matchesLoaders:@[@"fabric"] gameVersion:@"1.21.1"]);
 }
 
+static void testPackEntriesMatchKindLoaders(void) {
+    NSArray<NSString *> *resourceLoaders = [ModContentKind.resourcePacks loadersForProfileLoaders:@[@"fabric"]];
+    NSArray<NSString *> *shaderLoaders = [ModContentKind.shaderPacks loadersForProfileLoaders:@[]];
+
+    NSDictionary *resourceEntry = @{@"loaders": @[@"minecraft"], @"gameVersions": @[@"1.21.1"]};
+    MT_ASSERT([ModIndex entry:resourceEntry matchesLoaders:resourceLoaders gameVersion:@"1.21.1"]);
+    MT_ASSERT(![ModIndex entry:resourceEntry matchesLoaders:resourceLoaders gameVersion:@"1.21.4"]);
+
+    NSDictionary *shaderEntry = @{@"loaders": @[@"iris"], @"gameVersions": @[@"1.21.1"]};
+    MT_ASSERT([ModIndex entry:shaderEntry matchesLoaders:shaderLoaders gameVersion:@"1.21.1"]);
+    MT_ASSERT(![ModIndex entry:shaderEntry matchesLoaders:resourceLoaders gameVersion:@"1.21.1"]);
+}
+
 static void testEntryForVersionMapsFields(void) {
     NSDictionary *version = @{
         @"id": @"ver1",
@@ -162,5 +176,6 @@ void ModIndexTests(void) {
     MT_RUN(testFileNamesRequiringProject);
     MT_RUN(testPruneRemovesEntriesForMissingFiles);
     MT_RUN(testEntryMatches);
+    MT_RUN(testPackEntriesMatchKindLoaders);
     MT_RUN(testEntryForVersionMapsFields);
 }
