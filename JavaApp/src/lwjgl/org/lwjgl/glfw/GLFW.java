@@ -15,6 +15,7 @@ import javax.annotation.*;
 import net.kdt.pojavlaunch.Tools;
 
 import org.lwjgl.*;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.system.*;
 import org.lwjgl.system.macosx.*;
 
@@ -485,10 +486,12 @@ public class GLFW
     /* volatile */ public static GLFWDropCallback mGLFWDropCallback;
     /* volatile */ public static GLFWErrorCallback mGLFWErrorCallback;
     /* volatile */ public static GLFWFramebufferSizeCallback mGLFWFramebufferSizeCallback;
+    /* volatile */ public static GLFWIMEStatusCallback mGLFWIMEStatusCallback;
     /* volatile */ public static GLFWJoystickCallback mGLFWJoystickCallback;
     /* volatile */ public static GLFWKeyCallback mGLFWKeyCallback;
     /* volatile */ public static GLFWMonitorCallback mGLFWMonitorCallback;
     /* volatile */ public static GLFWMouseButtonCallback mGLFWMouseButtonCallback;
+    /* volatile */ public static GLFWPreeditCallback mGLFWPreeditCallback;
     /* volatile */ public static GLFWScrollCallback mGLFWScrollCallback;
     /* volatile */ public static GLFWWindowCloseCallback mGLFWWindowCloseCallback;
     /* volatile */ public static GLFWWindowContentScaleCallback mGLFWWindowContentScaleCallback;
@@ -787,6 +790,25 @@ public class GLFW
         return lastCallback;
     }
 
+    // GLFW 3.4 IME callbacks (used by Minecraft 26.2+). Text input arrives via the char callback, so these are only stored.
+    public static GLFWPreeditCallback glfwSetPreeditCallback(@NativeType("GLFWwindow *") long window, @Nullable @NativeType("GLFWpreeditfun") GLFWPreeditCallbackI cbfun) {
+        GLFWPreeditCallback lastCallback = mGLFWPreeditCallback;
+        if (cbfun == null) mGLFWPreeditCallback = null;
+        else mGLFWPreeditCallback = GLFWPreeditCallback.create(cbfun);
+
+        return lastCallback;
+    }
+
+    public static GLFWIMEStatusCallback glfwSetIMEStatusCallback(@NativeType("GLFWwindow *") long window, @Nullable @NativeType("GLFWimestatusfun") GLFWIMEStatusCallbackI cbfun) {
+        GLFWIMEStatusCallback lastCallback = mGLFWIMEStatusCallback;
+        if (cbfun == null) mGLFWIMEStatusCallback = null;
+        else mGLFWIMEStatusCallback = GLFWIMEStatusCallback.create(cbfun);
+
+        return lastCallback;
+    }
+
+    public static void glfwSetPreeditCursorRectangle(@NativeType("GLFWwindow *") long window, int x, int y, int w, int h) { }
+
     static boolean isGLFWReady;
     public static boolean glfwInit() {
         if (!isGLFWReady) {
@@ -807,6 +829,11 @@ public class GLFW
 
     public static int glfwGetPlatform() {
         return GLFW_PLATFORM_X11;
+    }
+
+    @NativeType("int")
+    public static boolean glfwPlatformSupported(int platform) {
+        return platform == glfwGetPlatform();
     }
 
     @NativeType("GLFWwindow *")
@@ -840,6 +867,12 @@ public class GLFW
     public static long glfwGetPrimaryMonitor() {
         // Prevent NULL check
         return 1L;
+    }
+
+    @Nullable
+    @NativeType("char const *")
+    public static String glfwGetMonitorName(@NativeType("GLFWmonitor *") long monitor) {
+        return "Built-in Display";
     }
 
     public static void glfwGetMonitorPos(@NativeType("GLFWmonitor *") long monitor, @Nullable @NativeType("int *") IntBuffer xpos, @Nullable @NativeType("int *") IntBuffer ypos) {
@@ -973,6 +1006,7 @@ public class GLFW
     public static long glfwCreateWindow(int width, int height, CharSequence title, long monitor, long share) {
         // Create an ACTUAL EGL context
         long ptr = nglfwCreateContext(share);
+        rebindGLToRenderer();
         //nativeEglMakeCurrent(ptr);
         GLFWWindowProperties win = new GLFWWindowProperties();
         // win.width = width;
@@ -989,6 +1023,23 @@ public class GLFW
         mainContext = ptr;
         return ptr;
         //Return our context
+    }
+
+    // Minecraft 26.2+ binds OpenGL during startup, before the window hints let the "auto" renderer
+    // pick the real GL library. Once the context is created the choice is final, so rebind if needed.
+    private static void rebindGLToRenderer() {
+        String libName = System.getProperty("org.lwjgl.opengl.libname");
+        FunctionProvider provider = GL.getFunctionProvider();
+        if (libName == null || !(provider instanceof SharedLibrary)) return;
+
+        String boundName = ((SharedLibrary) provider).getName();
+        String boundFile = boundName.substring(boundName.lastIndexOf('/') + 1);
+        String wantedFile = libName.substring(libName.lastIndexOf('/') + 1);
+        if (!boundFile.equals(wantedFile)) {
+            System.out.println("GLFW: Rebinding OpenGL from " + boundFile + " to " + wantedFile);
+            GL.destroy();
+            GL.create();
+        }
     }
 
     public static void glfwDestroyWindow(long window) {
@@ -1088,7 +1139,8 @@ public class GLFW
     public static void glfwPostEmptyEvent() {}
 
     public static int glfwGetInputMode(@NativeType("GLFWwindow *") long window, int mode) {
-        return internalGetWindow(window).inputModes.get(mode);
+        // Unset modes (e.g. GLFW 3.4 GLFW_IME) report GLFW's defaults
+        return internalGetWindow(window).inputModes.getOrDefault(mode, mode == GLFW_CURSOR ? GLFW_CURSOR_NORMAL : GLFW_FALSE);
     }
 
     public static void glfwSetInputMode(@NativeType("GLFWwindow *") long window, int mode, int value) {
