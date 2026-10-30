@@ -272,6 +272,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dorg.lwjgl.glfw.checkThread0=false";
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
     //margv[++margc] = "-Dorg.lwjgl.util.NoChecks=true";
+    // Sodium refuses to start unless LWJGL is exactly the version the game targets (3.4.1 for 26.2),
+    // but the bundled 3.3.3 + overrides covers everything it calls outside its Windows-only paths
+    margv[++margc] = "-Dsodium.checks.issue2561=false";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
 
     // Preset OpenGL libname
