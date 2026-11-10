@@ -57,6 +57,18 @@ void init_loadDefaultEnv() {
     setenv("SDL_JOYSTICK_HIDAPI_STEAM", "0", 1);
 }
 
+// MoltenVK tuning for the game's own Vulkan backend (Minecraft 26.2+).
+// Called after init_loadCustomEnv and never overwrites, so a custom env
+// variable such as MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=1 still wins.
+void init_loadMoltenVKEnv(NSString *renderer) {
+    // Zink drives MoltenVK through Mesa with its own submit threading; leave it on MoltenVK's defaults.
+    if ([renderer hasPrefix:@"libOSMesa"]) return;
+
+    // Submit and present on MoltenVK's own GCD queue, so encoding the Metal
+    // command buffer is no longer done on the game's render thread.
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
+}
+
 void init_loadCustomEnv() {
     NSString *envvars = getPrefObject(@"java.env_variables");
     if (envvars == nil) return;
@@ -177,6 +189,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         NSString *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
         NSLog(@"[JavaLauncher] RENDERER is set to %@\n", renderer);
         setenv("RENDERER", renderer.UTF8String, 1);
+        init_loadMoltenVKEnv(renderer);
         // Setup gameDir
         gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
             getenv("AME_HOME"), getPrefObject(@"general.game_directory"),

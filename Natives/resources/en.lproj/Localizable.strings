@@ -256,6 +256,14 @@
 "preference.title.allocated_memory" = "Memory allocation (MB)";
 "preference.detail.allocated_memory" = "Controls how much memory is given to Minecraft";
 "preference.warn.allocated_memory" = "Due to limitations in the operating system itself, this option may cause instability at this and higher values. Proceed with caution.";
+"preference.status.enabled" = "Enabled";
+"preference.status.missing" = "Missing";
+"preference.title.ent_increased_memory_limit" = "Increased Memory Limit";
+"preference.detail.ent_increased_memory_limit" = "This install is signed with the Increased Memory Limit entitlement, so iOS lets Minecraft use more RAM before closing it.";
+"preference.warn.ent_increased_memory_limit" = "This install is not signed with the Increased Memory Limit entitlement, so iOS may close Minecraft at lower memory use. Enable Increased Memory Limit on the App ID (with GetMoreRam, or in the Apple Developer portal on a paid account), then refresh or reinstall the app.";
+"preference.title.ent_extended_virtual_addressing" = "Extended Virtual Addressing";
+"preference.detail.ent_extended_virtual_addressing" = "This install is signed with the Extended Virtual Addressing entitlement, so Java can reserve large memory allocations.";
+"preference.warn.ent_extended_virtual_addressing" = "This install is not signed with the Extended Virtual Addressing entitlement, so large memory allocations may fail to start. Enable Extended Virtual Addressing on the App ID in the Apple Developer portal, then refresh or reinstall the app.";
 "preference.title.custom_env" = "Environment variables";
 "preference.detail.custom_env" = "This option is under construction. Create and edit custom_env.txt in the meantime.";
 
