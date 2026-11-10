@@ -32,12 +32,15 @@ extern UIWindow *mainWindow;
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     // Called when the scene has moved from an inactive state to an active state.
     // Use this method to restart any tasks that were paused (or not yet started) when the scene was inactive.
+    CallbackBridge_setRenderPaused(NO);
 }
 
 
 - (void)sceneWillResignActive:(UIScene *)scene {
     // Called when the scene will move from an active state to an inactive state.
     // This may occur due to temporary interruptions (ex. an incoming phone call).
+    // Stop the render thread before the app reaches the background, where GPU submits fail.
+    CallbackBridge_setRenderPaused(YES);
 }
 
 

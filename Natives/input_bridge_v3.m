@@ -14,6 +14,7 @@
 
 #include <assert.h>
 #include <dlfcn.h>
+#include <pthread.h>
 #include <libgen.h>
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -262,7 +263,30 @@ void handleFramebufferSizeJava(void* window, int w, int h) {
     (*runtimeJNIEnvPtr)->CallStaticVoidMethod(runtimeJNIEnvPtr, vmGlfwClass, method_internalWindowSizeChanged, (long)window, w, h);
 }
 
+// iOS rejects GPU work from a background app; with Vulkan, MoltenVK then reports
+// VK_ERROR_DEVICE_LOST. The game calls glfwPollEvents once per frame on its render
+// thread, so park it here while the scene is inactive.
+static pthread_mutex_t renderPauseLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t renderPauseCond = PTHREAD_COND_INITIALIZER;
+static BOOL isRenderPaused = NO;
+
+void CallbackBridge_setRenderPaused(BOOL paused) {
+    pthread_mutex_lock(&renderPauseLock);
+    isRenderPaused = paused;
+    pthread_cond_broadcast(&renderPauseCond);
+    pthread_mutex_unlock(&renderPauseLock);
+}
+
+static void waitWhileRenderPaused() {
+    pthread_mutex_lock(&renderPauseLock);
+    while (isRenderPaused) {
+        pthread_cond_wait(&renderPauseCond, &renderPauseLock);
+    }
+    pthread_mutex_unlock(&renderPauseLock);
+}
+
 void pojavPumpEvents(void* window) {
+    waitWhileRenderPaused();
     static BOOL setInputReady = NO;
     if(!setInputReady) {
         setInputReady = YES;
