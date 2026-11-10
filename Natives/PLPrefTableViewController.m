@@ -96,7 +96,7 @@
 
     NSString *cellID;
     UITableViewCellStyle cellStyle;
-    if (item[@"type"] == self.typeChildPane || item[@"type"] == self.typePickField) {
+    if (item[@"type"] == self.typeChildPane || item[@"type"] == self.typePickField || item[@"type"] == self.typeStatus) {
         cellID = @"cellValue1";
         cellStyle = UITableViewCellStyleValue1;
     } else {
@@ -119,6 +119,7 @@
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.textLabel.textColor = nil;
     cell.detailTextLabel.text = nil;
+    cell.detailTextLabel.textColor = nil;
 
     NSString *key = item[@"key"];
     if (indexPath.row == 0 && self.prefSections) {
@@ -199,6 +200,14 @@
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleGray;
         cell.detailTextLabel.text = weakSelf.getPreference(section, key);
+    };
+
+    self.typeStatus = ^void(UITableViewCell *cell, NSString *section, NSString *key, NSDictionary *item) {
+        BOOL(^status)(void) = item[@"status"];
+        BOOL ok = status && status();
+        cell.selectionStyle = UITableViewCellSelectionStyleGray;
+        cell.detailTextLabel.text = localize(ok ? @"preference.status.enabled" : @"preference.status.missing", nil);
+        cell.detailTextLabel.textColor = ok ? UIColor.systemGreenColor : UIColor.systemRedColor;
     };
 
     self.typeSlider = ^void(UITableViewCell *cell, NSString *section, NSString *key, NSDictionary *item) {
@@ -306,6 +315,14 @@
         return;
     } else if (item[@"type"] == self.typePickField) {
         [self tableView:tableView openPickerAtIndexPath:indexPath];
+        return;
+    } else if (item[@"type"] == self.typeStatus) {
+        BOOL(^status)(void) = item[@"status"];
+        NSString *key = item[@"key"];
+        NSString *message = localize(([NSString stringWithFormat:@"preference.%@.%@",
+            (status && status()) ? @"detail" : @"warn", key]), nil);
+        [self showAlertOnView:[tableView cellForRowAtIndexPath:indexPath]
+            title:localize(([NSString stringWithFormat:@"preference.title.%@", key]), nil) message:message];
         return;
     } else if (realUIIdiom != UIUserInterfaceIdiomTV) {
         return;

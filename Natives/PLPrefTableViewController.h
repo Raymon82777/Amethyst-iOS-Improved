@@ -6,7 +6,8 @@ typedef void (^SetPreferenceBlock)(NSString *, NSString *, id);
 
 @interface PLPrefTableViewController : UITableViewController<UITextFieldDelegate>
 
-@property(nonatomic) CreateView typeButton, typeChildPane, typePickField, typeTextField, typeSlider, typeSwitch;
+// typeStatus: read-only row; item[@"status"] is a BOOL(^)(void) block shown as Enabled/Missing, tap explains it
+@property(nonatomic) CreateView typeButton, typeChildPane, typePickField, typeStatus, typeTextField, typeSlider, typeSwitch;
 
 @property(nonatomic) GetPreferenceBlock getPreference;
 @property(nonatomic) SetPreferenceBlock setPreference;

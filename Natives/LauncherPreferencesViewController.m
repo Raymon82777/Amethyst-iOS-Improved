@@ -362,6 +362,21 @@
                     return view.value >= NSProcessInfo.processInfo.physicalMemory / 1048576 * 0.37;
                 },
                 @"warnKey": @"mem_warn"
+            },
+            // Read-only: whether the installed signature carries the memory entitlements
+            @{@"key": @"ent_increased_memory_limit",
+                @"icon": @"memorychip.fill",
+                @"type": self.typeStatus,
+                @"status": ^BOOL(){
+                    return getEntitlementValue(@"com.apple.developer.kernel.increased-memory-limit");
+                }
+            },
+            @{@"key": @"ent_extended_virtual_addressing",
+                @"icon": @"square.stack.3d.up",
+                @"type": self.typeStatus,
+                @"status": ^BOOL(){
+                    return getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing");
+                }
             }
         ], @[
             // Debug settings - only recommended for developer use
